@@ -34,48 +34,76 @@ class DesktopWindowTitleBar extends ConsumerWidget {
       0.0,
       ShellTheme.of(context).windowRadius - DesktopMetrics.frameBorder,
     );
-    return Container(
-      height: DesktopMetrics.titleBarHeight,
-      decoration: BoxDecoration(
-        color: ShellColors.windowFrameSurface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(radius)),
-      ),
-      child: Row(
-        children: <Widget>[
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: ShellColors.textPrimary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
+    // The whole title strip is the drag surface: the gesture and move cursor
+    // cover the full 42px height, not just the text line. Window buttons stay
+    // interactive through the gesture arena (tap wins on release, pan wins
+    // once the pointer moves past the touch slop).
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanStart: (_) => _beginMove(ref),
+      onPanUpdate: (details) => _moveBy(ref, details.delta),
+      onPanEnd: (_) => _endMove(ref),
+      onPanCancel: () => _endMove(ref),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.move,
+        child: Container(
+          height: DesktopMetrics.titleBarHeight,
+          decoration: BoxDecoration(
+            color: ShellColors.windowFrameSurface,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(radius)),
+          ),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: ShellColors.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                 ),
               ),
-            ),
+              _WindowButton(
+                icon: Icons.remove,
+                semanticLabel: 'Minimize',
+                onTap: () => _minimize(ref),
+              ),
+              _WindowButton(
+                icon: maximized ? Icons.filter_none : Icons.crop_square,
+                semanticLabel: maximized ? 'Restore' : 'Maximize',
+                onTap: () => _toggleMaximize(ref),
+              ),
+              _WindowButton(
+                icon: Icons.close,
+                semanticLabel: 'Close',
+                destructive: true,
+                onTap: () => _close(ref),
+              ),
+            ],
           ),
-          _WindowButton(
-            icon: Icons.remove,
-            semanticLabel: 'Minimize',
-            onTap: () => _minimize(ref),
-          ),
-          _WindowButton(
-            icon: maximized ? Icons.filter_none : Icons.crop_square,
-            semanticLabel: maximized ? 'Restore' : 'Maximize',
-            onTap: () => _toggleMaximize(ref),
-          ),
-          _WindowButton(
-            icon: Icons.close,
-            semanticLabel: 'Close',
-            destructive: true,
-            onTap: () => _close(ref),
-          ),
-        ],
+        ),
       ),
     );
+  }
+
+  void _beginMove(WidgetRef ref) {
+    ref.read(desktopWorkspaceProvider.notifier).beginMove(window.objectId);
+  }
+
+  void _moveBy(WidgetRef ref, Offset delta) {
+    ref
+        .read(desktopWorkspaceProvider.notifier)
+        .moveBy(window.objectId, delta);
+  }
+
+  void _endMove(WidgetRef ref) {
+    ref.read(desktopWorkspaceProvider.notifier).endMove(window.objectId);
   }
 
   void _minimize(WidgetRef ref) {
