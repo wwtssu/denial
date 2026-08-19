@@ -10,6 +10,8 @@ use smithay::wayland::compositor::with_states;
 #[cfg(feature = "flutter")]
 use smithay::wayland::seat::WaylandFocus;
 #[cfg(feature = "flutter")]
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
+#[cfg(feature = "flutter")]
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 use smithay::wayland::shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData};
 #[cfg(feature = "flutter")]
@@ -68,8 +70,16 @@ const SHELL_FRAME_BORDER: i32 = 1;
 
 #[cfg(feature = "flutter")]
 pub(super) fn shell_draws_server_frame(window: &Window) -> bool {
-    if window.toplevel().is_some() {
-        return true;
+    if let Some(toplevel) = window.toplevel() {
+        // Respect xdg-decoration negotiation. A client that explicitly asked
+        // for client-side decorations (Chromium and friends draw their own
+        // window controls) must not receive a second shell-drawn title bar.
+        // Clients that stay neutral or ask for server-side decorations keep
+        // Denial's unified frame.
+        return !matches!(
+            toplevel.with_committed_state(|state| state.and_then(|s| s.decoration_mode)),
+            Some(zxdg_toplevel_decoration_v1::Mode::ClientSide)
+        );
     }
     window
         .x11_surface()

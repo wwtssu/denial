@@ -3224,7 +3224,13 @@ impl WaylandFrontend {
                         xwayland::x11_window_opacity(x11),
                     )
                 })
-                .unwrap_or((false, true, 1.0));
+                .unwrap_or_else(|| {
+                    // Wayland toplevels: honor xdg-decoration negotiation so
+                    // clients that asked for client-side decorations
+                    // (Chromium and friends) do not get a second shell frame.
+                    let server_side_decorated = shell_draws_server_frame(window);
+                    (!server_side_decorated, server_side_decorated, 1.0)
+                });
             if window_opacity < 1.0 {
                 for layer in &mut layers {
                     layer.opacity *= window_opacity;

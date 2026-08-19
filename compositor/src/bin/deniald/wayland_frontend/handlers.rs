@@ -1688,17 +1688,22 @@ impl XdgActivationHandler for RuntimeState {
     }
 }
 
-const fn shell_decoration_mode() -> XdgDecorationMode {
+fn shell_decoration_mode(requested: Option<XdgDecorationMode>) -> XdgDecorationMode {
     // Flutter owns the visible frame, title bar, shadows, and window actions.
-    // Advertising client-side decorations would render a second frame inside
-    // that shell-owned frame, so Denial deliberately keeps one policy for
-    // defaults as well as explicit client requests.
-    XdgDecorationMode::ServerSide
+    // Clients that explicitly ask for client-side decorations (Chromium and
+    // friends render their own window controls) would otherwise double up a
+    // button set inside the shell-drawn title bar, so honor that request.
+    // Clients that stay neutral or ask for server-side decorations keep
+    // Denial's unified frame.
+    match requested {
+        Some(XdgDecorationMode::ClientSide) => XdgDecorationMode::ClientSide,
+        _ => XdgDecorationMode::ServerSide,
+    }
 }
 
-fn configure_shell_decoration(toplevel: &ToplevelSurface) {
+fn configure_shell_decoration(toplevel: &ToplevelSurface, requested: Option<XdgDecorationMode>) {
     toplevel.with_pending_state(|state| {
-        state.decoration_mode = Some(shell_decoration_mode());
+        state.decoration_mode = Some(shell_decoration_mode(requested));
     });
     if toplevel.is_initial_configure_sent() {
         toplevel.send_pending_configure();
@@ -1707,15 +1712,15 @@ fn configure_shell_decoration(toplevel: &ToplevelSurface) {
 
 impl XdgDecorationHandler for RuntimeState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        configure_shell_decoration(&toplevel);
+        configure_shell_decoration(&toplevel, None);
     }
 
-    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: XdgDecorationMode) {
-        configure_shell_decoration(&toplevel);
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: XdgDecorationMode) {
+        configure_shell_decoration(&toplevel, Some(mode));
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        configure_shell_decoration(&toplevel);
+        configure_shell_decoration(&toplevel, None);
     }
 }
 
@@ -1763,8 +1768,16 @@ mod decoration_policy_tests {
     use super::*;
 
     #[test]
-    fn flutter_shell_is_always_the_decoration_owner() {
-        assert_eq!(shell_decoration_mode(), XdgDecorationMode::ServerSide);
+    fn decoration_mode_respects_explicit_client_requests() {
+        assert_eq!(shell_decoration_mode(None), XdgDecorationMode::ServerSide);
+        assert_eq!(
+            shell_decoration_mode(Some(XdgDecorationMode::ServerSide)),
+            XdgDecorationMode::ServerSide
+        );
+        assert_eq!(
+            shell_decoration_mode(Some(XdgDecorationMode::ClientSide)),
+            XdgDecorationMode::ClientSide
+        );
     }
 }
 
