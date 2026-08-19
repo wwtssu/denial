@@ -118,12 +118,14 @@ class DenialWireCodec {
         : (snapshot.windows.toList(growable: false)
             ..sort(_compareInputWindows));
     final windows = <generated.InputWindowRegionObjectBuilder>[];
+    final decorations = <generated.WireRectObjectBuilder>[];
     for (final window in orderedWindows) {
       if (window.window.objectId <= 0 ||
           window.targetSurfaceId <= 0 ||
           window.window.windowId <= 0 ||
           !_validRect(window.rect) ||
-          !_validRect(window.sourceRect)) {
+          !_validRect(window.sourceRect) ||
+          window.decorations.any((rect) => !_validRect(rect))) {
         return null;
       }
       var flags = 0;
@@ -149,6 +151,24 @@ class DenialWireCodec {
           flags: flags,
         ),
       );
+      // Decorations are encoded as a flat array parallel to windows; the
+      // compositor aligns them by index. A window without shell decoration
+      // contributes a zero-size rect. The current wire layout supports at
+      // most one decoration rect per window (the server-side title bar);
+      // more shapes would need an offset table.
+      if (window.decorations.length > 1) {
+        return null;
+      }
+      decorations.add(
+        window.decorations.isEmpty
+            ? generated.WireRectObjectBuilder(
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+              )
+            : _rectBuilder(window.decorations.first),
+      );
     }
 
     var flags = 0;
@@ -166,6 +186,7 @@ class DenialWireCodec {
         flags: flags,
         shellRegions: shellRegions,
         windows: windows,
+        windowDecorations: decorations,
         visibleSurfaceIds: snapshot.visibleSurfaceIds,
         softwareKeyboardRegions: softwareKeyboardRegions,
       ),
@@ -1297,6 +1318,7 @@ class _AlignedInputLayoutObjectBuilder extends fb.ObjectBuilder {
     required this.flags,
     required this.shellRegions,
     required this.windows,
+    required this.windowDecorations,
     required this.visibleSurfaceIds,
     required this.softwareKeyboardRegions,
   });
@@ -1305,6 +1327,7 @@ class _AlignedInputLayoutObjectBuilder extends fb.ObjectBuilder {
   final int flags;
   final List<generated.WireRectObjectBuilder> shellRegions;
   final List<generated.InputWindowRegionObjectBuilder> windows;
+  final List<generated.WireRectObjectBuilder> windowDecorations;
   final List<int> visibleSurfaceIds;
   final List<generated.WireRectObjectBuilder> softwareKeyboardRegions;
 
@@ -1312,6 +1335,10 @@ class _AlignedInputLayoutObjectBuilder extends fb.ObjectBuilder {
   int finish(fb.Builder builder) {
     final shellRegionsOffset = _writeAlignedStructVector(builder, shellRegions);
     final windowsOffset = _writeAlignedStructVector(builder, windows);
+    final windowDecorationsOffset = _writeAlignedStructVector(
+      builder,
+      windowDecorations,
+    );
     final visibleSurfaceIdsOffset = _writeAlignedUint64Vector(
       builder,
       visibleSurfaceIds,
@@ -1320,13 +1347,14 @@ class _AlignedInputLayoutObjectBuilder extends fb.ObjectBuilder {
       builder,
       softwareKeyboardRegions,
     );
-    builder.startTable(6);
+    builder.startTable(7);
     builder.addUint64(0, epoch);
     builder.addUint32(1, flags);
     builder.addOffset(2, shellRegionsOffset);
     builder.addOffset(3, windowsOffset);
-    builder.addOffset(4, visibleSurfaceIdsOffset);
-    builder.addOffset(5, softwareKeyboardRegionsOffset);
+    builder.addOffset(4, windowDecorationsOffset);
+    builder.addOffset(5, visibleSurfaceIdsOffset);
+    builder.addOffset(6, softwareKeyboardRegionsOffset);
     return builder.endTable();
   }
 

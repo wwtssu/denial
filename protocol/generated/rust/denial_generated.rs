@@ -2922,8 +2922,9 @@ impl<'a> InputLayout<'a> {
   pub const VT_FLAGS: flatbuffers::VOffsetT = 6;
   pub const VT_SHELL_REGIONS: flatbuffers::VOffsetT = 8;
   pub const VT_WINDOWS: flatbuffers::VOffsetT = 10;
-  pub const VT_VISIBLE_SURFACE_IDS: flatbuffers::VOffsetT = 12;
-  pub const VT_SOFTWARE_KEYBOARD_REGIONS: flatbuffers::VOffsetT = 14;
+  pub const VT_WINDOW_DECORATIONS: flatbuffers::VOffsetT = 12;
+  pub const VT_VISIBLE_SURFACE_IDS: flatbuffers::VOffsetT = 14;
+  pub const VT_SOFTWARE_KEYBOARD_REGIONS: flatbuffers::VOffsetT = 16;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -2938,6 +2939,7 @@ impl<'a> InputLayout<'a> {
     builder.add_epoch(args.epoch);
     if let Some(x) = args.software_keyboard_regions { builder.add_software_keyboard_regions(x); }
     if let Some(x) = args.visible_surface_ids { builder.add_visible_surface_ids(x); }
+    if let Some(x) = args.window_decorations { builder.add_window_decorations(x); }
     if let Some(x) = args.windows { builder.add_windows(x); }
     if let Some(x) = args.shell_regions { builder.add_shell_regions(x); }
     builder.add_flags(args.flags);
@@ -2974,6 +2976,13 @@ impl<'a> InputLayout<'a> {
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, InputWindowRegion>>>(InputLayout::VT_WINDOWS, None)}
   }
   #[inline]
+  pub fn window_decorations(&self) -> Option<flatbuffers::Vector<'a, WireRect>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, WireRect>>>(InputLayout::VT_WINDOW_DECORATIONS, None)}
+  }
+  #[inline]
   pub fn visible_surface_ids(&self) -> Option<flatbuffers::Vector<'a, u64>> {
     // Safety:
     // Created from valid Table for this object
@@ -3000,6 +3009,7 @@ impl flatbuffers::Verifiable for InputLayout<'_> {
      .visit_field::<u32>("flags", Self::VT_FLAGS, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, WireRect>>>("shell_regions", Self::VT_SHELL_REGIONS, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, InputWindowRegion>>>("windows", Self::VT_WINDOWS, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, WireRect>>>("window_decorations", Self::VT_WINDOW_DECORATIONS, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u64>>>("visible_surface_ids", Self::VT_VISIBLE_SURFACE_IDS, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, WireRect>>>("software_keyboard_regions", Self::VT_SOFTWARE_KEYBOARD_REGIONS, false)?
      .finish();
@@ -3011,6 +3021,7 @@ pub struct InputLayoutArgs<'a> {
     pub flags: u32,
     pub shell_regions: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, WireRect>>>,
     pub windows: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, InputWindowRegion>>>,
+    pub window_decorations: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, WireRect>>>,
     pub visible_surface_ids: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u64>>>,
     pub software_keyboard_regions: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, WireRect>>>,
 }
@@ -3022,6 +3033,7 @@ impl<'a> Default for InputLayoutArgs<'a> {
       flags: 0,
       shell_regions: None,
       windows: None,
+      window_decorations: None,
       visible_surface_ids: None,
       software_keyboard_regions: None,
     }
@@ -3048,6 +3060,10 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> InputLayoutBuilder<'a, 'b, A> {
   #[inline]
   pub fn add_windows(&mut self, windows: flatbuffers::WIPOffset<flatbuffers::Vector<'b , InputWindowRegion>>) {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(InputLayout::VT_WINDOWS, windows);
+  }
+  #[inline]
+  pub fn add_window_decorations(&mut self, window_decorations: flatbuffers::WIPOffset<flatbuffers::Vector<'b , WireRect>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(InputLayout::VT_WINDOW_DECORATIONS, window_decorations);
   }
   #[inline]
   pub fn add_visible_surface_ids(&mut self, visible_surface_ids: flatbuffers::WIPOffset<flatbuffers::Vector<'b , u64>>) {
@@ -3079,6 +3095,7 @@ impl core::fmt::Debug for InputLayout<'_> {
       ds.field("flags", &self.flags());
       ds.field("shell_regions", &self.shell_regions());
       ds.field("windows", &self.windows());
+      ds.field("window_decorations", &self.window_decorations());
       ds.field("visible_surface_ids", &self.visible_surface_ids());
       ds.field("software_keyboard_regions", &self.software_keyboard_regions());
       ds.finish()

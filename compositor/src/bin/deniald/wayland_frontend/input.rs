@@ -703,6 +703,29 @@ impl WaylandFrontend {
         // region list as client surfaces. They intentionally have no Smithay
         // input target: once the topmost hit is local, stop traversal so a
         // covered Wayland client cannot receive the event through it.
+        // Shell-drawn decoration (server-side title bar) belongs to its
+        // window and is depth-tested in window order, but routes to the shell
+        // scene: the client has no buffer under the title bar. A covered
+        // client must not receive the event through it.
+        if layout
+            .windows
+            .iter()
+            .zip(&layout.window_decorations)
+            .any(|(region, decoration)| {
+                decoration.width > 0.0
+                    && decoration.height > 0.0
+                    && decoration.contains(scene_position.x, scene_position.y)
+                    && region.visible()
+                    && region.hit_test_enabled()
+            })
+        {
+            return None;
+        }
+
+        // Local Flutter windows participate in the same front-to-back window
+        // region list as client surfaces. They intentionally have no Smithay
+        // input target: once the topmost hit is local, stop traversal so a
+        // covered Wayland client cannot receive the event through it.
         if let Some(hit) = layout
             .windows
             .iter()

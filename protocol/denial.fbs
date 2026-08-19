@@ -215,6 +215,11 @@ table InputLayout {
   flags:uint;
   shell_regions:[WireRect];
   windows:[InputWindowRegion];
+  // Shell-drawn decoration belonging to each window, parallel to `windows`
+  // (same length, index-aligned). A zero-size rect means the window has no
+  // decoration region. Decoration hits route to the shell scene but are
+  // depth-tested as part of their window.
+  window_decorations:[WireRect];
   // All sampled surfaces currently visible in Flutter. This is intentionally
   // independent from hit-test regions: a negative-z subsurface can be visible
   // without ever being the input target.

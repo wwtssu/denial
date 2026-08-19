@@ -373,6 +373,9 @@ class InputLayoutTarget implements DebugActionTarget {
             'surfaceId': region.targetSurfaceId,
             'visible': region.visible,
             'hitTest': region.hitTest,
+            'decorations': [
+              for (final decoration in region.decorations) _rectJson(decoration),
+            ],
           },
       ],
     };

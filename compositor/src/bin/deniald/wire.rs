@@ -76,7 +76,7 @@ pub const INPUT_WINDOW_VISIBLE: u32 = 1 << 0;
 pub const INPUT_WINDOW_HIT_TEST_DISABLED: u32 = 1 << 1;
 pub const INPUT_WINDOW_GEOMETRY_LOCKED: u32 = 1 << 2;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InputRect {
     pub x: f64,
     pub y: f64,
@@ -330,6 +330,9 @@ pub struct InputLayoutSnapshot {
     pub shell_regions: Vec<InputRect>,
     pub software_keyboard_regions: Vec<InputRect>,
     pub windows: Vec<InputWindowRegion>,
+    /// Shell-drawn decoration per window, parallel to [Self::windows]
+    /// (same length, index-aligned). A zero-size rect means no decoration.
+    pub window_decorations: Vec<InputRect>,
     pub visible_surface_ids: Vec<u64>,
 }
 
@@ -1648,11 +1651,18 @@ fn decode_input_layout(
     let shell_regions = layout.shell_regions();
     let software_keyboard_regions = layout.software_keyboard_regions();
     let windows = layout.windows();
+    let window_decorations = layout.window_decorations();
     let visible_surface_ids = layout.visible_surface_ids();
     if shell_regions.is_some_and(|regions| regions.len() > MAX_REGIONS)
         || software_keyboard_regions.is_some_and(|regions| regions.len() > MAX_REGIONS)
         || windows.is_some_and(|regions| regions.len() > MAX_REGIONS)
+        || window_decorations.is_some_and(|regions| regions.len() > MAX_REGIONS)
         || visible_surface_ids.is_some_and(|ids| ids.len() > MAX_SURFACES)
+    {
+        return Err(WireError::Count);
+    }
+    if let (Some(windows), Some(decorations)) = (windows, window_decorations)
+        && windows.len() != decorations.len()
     {
         return Err(WireError::Count);
     }
@@ -1662,6 +1672,7 @@ fn decode_input_layout(
     decoded.shell_regions.clear();
     decoded.software_keyboard_regions.clear();
     decoded.windows.clear();
+    decoded.window_decorations.clear();
     decoded.visible_surface_ids.clear();
     identities.clear();
 
@@ -1738,6 +1749,34 @@ fn decode_input_layout(
             });
             previous = Some((window.z(), window.surface_id()));
         }
+        if let Some(decorations) = window_decorations {
+            for index in 0..decorations.len() {
+                let decoration = decorations.get(index);
+                let rect = InputRect {
+                    x: decoration.x(),
+                    y: decoration.y(),
+                    width: decoration.width(),
+                    height: decoration.height(),
+                };
+                // A zero-size rect is the "no decoration" placeholder, so
+                // only non-finite or negative geometry is rejected here.
+                if !rect.x.is_finite()
+                    || !rect.y.is_finite()
+                    || !rect.width.is_finite()
+                    || !rect.height.is_finite()
+                    || rect.width < 0.0
+                    || rect.height < 0.0
+                {
+                    return Err(WireError::Geometry);
+                }
+                decoded.window_decorations.push(rect);
+            }
+        } else {
+            decoded.window_decorations.resize(decoded.windows.len(), InputRect::default());
+        }
+    } else if window_decorations.is_some() {
+        // Decorations without any window regions cannot be aligned.
+        return Err(WireError::Count);
     }
 
     identities.clear();
