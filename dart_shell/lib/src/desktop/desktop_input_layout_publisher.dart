@@ -118,16 +118,28 @@ class _DesktopInputLayoutPublisherState
       for (final popup in inputMethodPopups) {
         shellRegions = _subtractFromAll(shellRegions, popup.geometry!);
       }
-      for (final placement in placements) {
-        final visualContentRect = placement.contentRect;
-        shellRegions = _subtractFromAll(shellRegions, visualContentRect);
+      // Clip every window's content to what is actually visible: regions
+      // covered by an upper window's frame (its shell-drawn title bar and
+      // borders) must stay shell-owned, otherwise pointer hits on a title
+      // bar button fall through to the covered window below. Process
+      // topmost-first and accumulate the upper frames.
+      final coveredFrames = <Rect>[];
+      for (final placement in placements.reversed) {
+        final visibleParts = _visibleParts(
+          placement.contentRect,
+          coveredFrames,
+        );
+        for (final part in visibleParts) {
+          shellRegions = _subtractFromAll(shellRegions, part);
+        }
         final window = windowsById[placement.objectId]!;
         for (final popup in window.popupRoots) {
-          shellRegions = _subtractFromAll(
-            shellRegions,
-            window.mapSurfaceRect(popup, visualContentRect),
-          );
+          final popupRect = window.mapSurfaceRect(popup, placement.contentRect);
+          for (final part in _visibleParts(popupRect, coveredFrames)) {
+            shellRegions = _subtractFromAll(shellRegions, part);
+          }
         }
+        coveredFrames.add(placement.frame);
       }
     }
     for (final region in interactions.childRegions) {
@@ -178,6 +190,7 @@ class _DesktopInputLayoutPublisherState
     // The wire hit tester consumes the first matching window. Build this list
     // in its final topmost-first order so the codec normally needs neither a
     // defensive copy nor another sort.
+    final inputCoveredFrames = <Rect>[];
     for (final placement in placements.reversed) {
       if (interactions.capturesFullScene) {
         final window = windowsById[placement.objectId]!;
@@ -194,37 +207,51 @@ class _DesktopInputLayoutPublisherState
       final visualContentRect = placement.contentRect;
       final sourceRect = window.contentCoordinateRect;
       final baseZ = placementOrder[placement.objectId]! * zStride;
+      final visibleParts = _visibleParts(
+        visualContentRect,
+        inputCoveredFrames,
+      );
       final popupRoots = window.popupRoots.toList(growable: false).reversed;
       for (final popup in popupRoots) {
+        final popupRect = window.mapSurfaceRect(popup, visualContentRect);
+        final popupSource = Rect.fromLTWH(
+          0.0,
+          0.0,
+          popup.surfaceWidth,
+          popup.surfaceHeight,
+        );
+        for (final part in _visibleParts(popupRect, inputCoveredFrames)) {
+          inputWindows.add(
+            InputWindowRegion(
+              window: window,
+              surfaceId: popup.surfaceId,
+              rect: part,
+              // Keep the clipped part's source rect offset-aligned with its
+              // scene rect: native hit testing maps coordinates by ratio, so
+              // a differently-sized source would skew client coordinates.
+              sourceRect: _partSourceRect(part, popupRect, popupSource),
+              z: baseZ + popup.compositionOrder + 1,
+              geometryLocked: placement.fullscreen,
+            ),
+          );
+        }
+      }
+      for (final part in visibleParts) {
         inputWindows.add(
           InputWindowRegion(
             window: window,
-            surfaceId: popup.surfaceId,
-            rect: window.mapSurfaceRect(popup, visualContentRect),
-            sourceRect: Rect.fromLTWH(
-              0.0,
-              0.0,
-              popup.surfaceWidth,
-              popup.surfaceHeight,
-            ),
-            z: baseZ + popup.compositionOrder + 1,
+            // A logical window region routes through the complete toplevel
+            // surface tree. The primary texture may be a full-window child and
+            // is a rendering choice, not an input target.
+            surfaceId: window.objectId,
+            rect: part,
+            sourceRect: _partSourceRect(part, visualContentRect, sourceRect),
+            z: baseZ,
             geometryLocked: placement.fullscreen,
           ),
         );
       }
-      inputWindows.add(
-        InputWindowRegion(
-          window: window,
-          // A logical window region routes through the complete toplevel
-          // surface tree. The primary texture may be a full-window child and
-          // is a rendering choice, not an input target.
-          surfaceId: window.objectId,
-          rect: visualContentRect,
-          sourceRect: sourceRect,
-          z: baseZ,
-          geometryLocked: placement.fullscreen,
-        ),
-      );
+      inputCoveredFrames.add(placement.frame);
       _configureWindowGeometry(
         window,
         placement.contentRect,
@@ -248,6 +275,7 @@ class _DesktopInputLayoutPublisherState
     if (!ref.read(denialBridgeProvider).publishInputLayout(snapshot)) {
       return;
     }
+    ref.read(inputLayoutSnapshotProvider.notifier).publish(snapshot);
     _epoch = snapshot.epoch;
     _lastSnapshot = snapshot;
   }
@@ -322,6 +350,37 @@ List<Rect> _subtractFromAll(List<Rect> regions, Rect cut) {
     result.addAll(_subtractRect(region, cut));
   }
   return result;
+}
+
+/// Splits [content] into the parts not covered by any of [covered] rects.
+///
+/// A window occluded by upper windows keeps only its visible pieces; the
+/// covered strips (including an upper window's shell-drawn title bar) stay
+/// out of this window's input regions so pointer hits there do not fall
+/// through to it.
+List<Rect> _visibleParts(Rect content, List<Rect> covered) {
+  var parts = <Rect>[content];
+  for (final cover in covered) {
+    final next = <Rect>[];
+    for (final part in parts) {
+      next.addAll(_subtractRect(part, cover));
+    }
+    parts = next;
+  }
+  return parts;
+}
+
+/// Maps a clipped [part] of [original] back into [source]'s coordinate space,
+/// preserving the offset relationship. Native hit testing maps scene
+/// coordinates to client coordinates by ratio, so the part's source rect must
+/// keep the same size as the part itself (1:1) or client coordinates skew.
+Rect _partSourceRect(Rect part, Rect original, Rect source) {
+  return Rect.fromLTRB(
+    source.left + (part.left - original.left),
+    source.top + (part.top - original.top),
+    source.left + (part.right - original.left),
+    source.top + (part.bottom - original.top),
+  );
 }
 
 List<Rect> _subtractRect(Rect source, Rect cut) {

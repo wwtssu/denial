@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart' show Rect;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../desktop/desktop_workspace.dart';
+import '../input/input_layout.dart';
 import '../launcher/controllers/home_grid_controller.dart';
 import '../launcher/models/desktop_app.dart';
 import '../launcher/models/home_grid_item.dart';
@@ -74,7 +76,8 @@ final debugActionsProvider = Provider<DebugActionRegistry>((ref) {
     ..register(const LauncherTarget())
     ..register(const AppsTarget())
     ..register(const ShellActionTarget())
-    ..register(const WatchTarget());
+    ..register(const WatchTarget())
+    ..register(const InputLayoutTarget());
   return registry;
 });
 
@@ -328,3 +331,57 @@ class WatchTarget implements DebugActionTarget {
         .debugWatchStatus();
   }
 }
+
+/// Dumps the last published input layout snapshot (shell regions and window
+/// input regions) so pointer routing can be diagnosed against real geometry.
+class InputLayoutTarget implements DebugActionTarget {
+  const InputLayoutTarget();
+
+  @override
+  String get key => 'input';
+
+  @override
+  Set<String> get actions => const {'layout'};
+
+  @override
+  Future<Map<String, Object?>> invoke(
+    DebugActionContext context,
+    String action,
+    Map<String, Object?> args,
+  ) async {
+    if (action != 'layout') {
+      throw DebugActionException('unknown input action: $action');
+    }
+    final snapshot = context.ref.read(inputLayoutSnapshotProvider);
+    if (snapshot == null) {
+      return <String, Object?>{'published': false};
+    }
+    return <String, Object?>{
+      'published': true,
+      'epoch': snapshot.epoch,
+      'shellRegions': [
+        for (final region in snapshot.shellRegions) _rectJson(region),
+      ],
+      'windows': [
+        for (final region in snapshot.windows)
+          <String, Object?>{
+            'windowId': region.window.objectId,
+            'appId': region.window.appId,
+            'rect': _rectJson(region.rect),
+            'sourceRect': _rectJson(region.sourceRect),
+            'z': region.z,
+            'surfaceId': region.targetSurfaceId,
+            'visible': region.visible,
+            'hitTest': region.hitTest,
+          },
+      ],
+    };
+  }
+}
+
+Map<String, Object?> _rectJson(Rect rect) => <String, Object?>{
+      'x': rect.left.round(),
+      'y': rect.top.round(),
+      'w': rect.width.round(),
+      'h': rect.height.round(),
+    };

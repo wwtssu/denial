@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/denial_window.dart';
 
@@ -226,6 +227,21 @@ bool _sameWireRect(Rect left, Rect right) {
       _sameWireCoordinate(left.width, right.width) &&
       _sameWireCoordinate(left.height, right.height);
 }
+
+/// Last successfully published input layout snapshot, for debug inspection.
+class InputLayoutSnapshotNotifier extends Notifier<InputLayoutSnapshot?> {
+  @override
+  InputLayoutSnapshot? build() => null;
+
+  void publish(InputLayoutSnapshot snapshot) {
+    state = snapshot;
+  }
+}
+
+final inputLayoutSnapshotProvider =
+    NotifierProvider<InputLayoutSnapshotNotifier, InputLayoutSnapshot?>(
+  InputLayoutSnapshotNotifier.new,
+);
 
 bool _sameWireCoordinate(double left, double right) {
   if (!left.isFinite || !right.isFinite) {
