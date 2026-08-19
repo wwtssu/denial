@@ -35,11 +35,15 @@ class DesktopWindowTitleBar extends ConsumerWidget {
       ShellTheme.of(context).windowRadius - DesktopMetrics.frameBorder,
     );
     // The whole title strip is the drag surface: the gesture and move cursor
-    // cover the full 42px height, not just the text line. Window buttons stay
+    // cover the full 36px height, not just the text line. Window buttons stay
     // interactive through the gesture arena (tap wins on release, pan wins
-    // once the pointer moves past the touch slop).
+    // once the pointer moves past the touch slop). A plain click on the
+    // decoration activates the window — content clicks already activate via
+    // the native route, but decoration hits route to the shell scene, so the
+    // title bar owns the activation itself.
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
+      onTap: () => _activate(ref),
       onPanStart: (_) => _beginMove(ref),
       onPanUpdate: (details) => _moveBy(ref, details.delta),
       onPanEnd: (_) => _endMove(ref),
@@ -90,6 +94,11 @@ class DesktopWindowTitleBar extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  void _activate(WidgetRef ref) {
+    ref.read(desktopWorkspaceProvider.notifier).activate(window.objectId);
+    ref.read(shellControllerProvider.notifier).focusWindow(window);
   }
 
   void _beginMove(WidgetRef ref) {
