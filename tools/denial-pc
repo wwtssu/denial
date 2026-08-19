@@ -188,7 +188,7 @@ is_compatible_legacy_config() {
 require_managed_config_or_absent() {
     local label="$1"
     local path="$2"
-    [[ -e "$path" || -L "$path" ]] || return
+    [[ -e "$path" || -L "$path" ]] || return 0
     grep -Fqx "# Installed by $SCRIPT_DIR/denial-pc" "$path" && return
     if is_compatible_legacy_config "$label" "$path"; then
         printf 'Adopting compatible legacy %s: %s\n' "$label" "$path"
@@ -564,6 +564,11 @@ run_compositor() {
     export RUST_BACKTRACE=1
     export RUST_LOG="${DENIA_RUST_LOG:-deniald=info,smithay=warn}"
 
+    local start_locked_args=()
+    if [[ "${DENIA_START_LOCKED:-0}" == 1 ]]; then
+        start_locked_args=(--start-locked)
+    fi
+
     command -v systemd-cat >/dev/null 2>&1 \
         || die "systemd-cat is required to retain compositor diagnostics"
     exec systemd-cat --identifier=deniald "$BINARY" \
@@ -571,7 +576,8 @@ run_compositor() {
         --output-config "$OUTPUT_CONFIG" \
         --wayland \
         --flutter-bundle "$BUNDLE" \
-        --flutter-renderer "$flutter_renderer"
+        --flutter-renderer "$flutter_renderer" \
+        "${start_locked_args[@]}"
 }
 
 run_session() {
@@ -734,7 +740,7 @@ as_root() {
 }
 
 remove_legacy_session_entry() {
-    [[ -e "$LEGACY_SESSION_FILE" ]] || return
+    [[ -e "$LEGACY_SESSION_FILE" ]] || return 0
     if ! grep -Fqx "Name=Denial (Rust)" "$LEGACY_SESSION_FILE" \
         || ! grep -Fqx \
             "Exec=uwsm start -e -D Denial $ROOT/dev/denial-rs-session session" \
@@ -796,7 +802,7 @@ install_session() {
 }
 
 remove_portal_entry() {
-    [[ -e "$PORTAL_FILE" ]] || return
+    [[ -e "$PORTAL_FILE" ]] || return 0
     if ! grep -Fqx "# Installed by $SCRIPT_DIR/denial-pc" "$PORTAL_FILE"; then
         printf 'warning  refusing to remove unrecognized portal routing %s\n' \
             "$PORTAL_FILE" >&2
@@ -807,7 +813,7 @@ remove_portal_entry() {
 }
 
 remove_wlr_portal_config() {
-    [[ -e "$WLR_PORTAL_CONFIG" ]] || return
+    [[ -e "$WLR_PORTAL_CONFIG" ]] || return 0
     if ! grep -Fqx "# Installed by $SCRIPT_DIR/denial-pc" "$WLR_PORTAL_CONFIG"; then
         printf 'warning  refusing to remove unrecognized wlr portal config %s\n' \
             "$WLR_PORTAL_CONFIG" >&2
@@ -818,7 +824,7 @@ remove_wlr_portal_config() {
 }
 
 remove_session_target() {
-    [[ -e "$SESSION_TARGET_FILE" ]] || return
+    [[ -e "$SESSION_TARGET_FILE" ]] || return 0
     if ! grep -Fqx 'BindsTo=graphical-session.target' "$SESSION_TARGET_FILE"; then
         printf 'warning  refusing to remove unrecognized session target %s\n' \
             "$SESSION_TARGET_FILE" >&2

@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Denial (development)
 Comment=Denial Rust compositor from the local development checkout
-Exec=@LAUNCHER@ session
+Exec=env DENIAL_DEBUG_HTTP=1 @LAUNCHER@ session
 # SDDM evaluates TryExec as its unprivileged greeter user before login. The
 # checkout commonly lives below a mode-0700 home directory, so checking the
 # launcher itself would incorrectly hide this development session at boot.
