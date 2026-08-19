@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:isolate';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -102,10 +103,12 @@ class HomeGridState {
 }
 
 class HomeGridController extends AsyncNotifier<HomeGridState> {
-  static const Duration _periodicRefreshInterval = Duration(minutes: 5);
+  static const Duration _fileWatchDebounce = Duration(milliseconds: 750);
   static const Duration _visibleRefreshMinInterval = Duration(seconds: 45);
 
-  Timer? _desktopRefreshTimer;
+  Timer? _fileWatchDebounceTimer;
+  final List<StreamSubscription<FileSystemEvent>> _fileWatchSubscriptions =
+      [];
   Timer? _activationRefreshTimer;
   DateTime? _lastDesktopRefresh;
   bool _desktopRefreshInFlight = false;
@@ -116,7 +119,11 @@ class HomeGridController extends AsyncNotifier<HomeGridState> {
   @override
   Future<HomeGridState> build() async {
     final generation = ++_buildGeneration;
-    _desktopRefreshTimer = null;
+    _fileWatchDebounceTimer = null;
+    for (final subscription in _fileWatchSubscriptions) {
+      unawaited(subscription.cancel());
+    }
+    _fileWatchSubscriptions.clear();
     _activationRefreshTimer = null;
     _lastDesktopRefresh = null;
     _desktopRefreshInFlight = false;
@@ -128,8 +135,12 @@ class HomeGridController extends AsyncNotifier<HomeGridState> {
       }
       _activationRefreshTimer?.cancel();
       _activationRefreshTimer = null;
-      _desktopRefreshTimer?.cancel();
-      _desktopRefreshTimer = null;
+      _fileWatchDebounceTimer?.cancel();
+      _fileWatchDebounceTimer = null;
+      for (final subscription in _fileWatchSubscriptions) {
+        unawaited(subscription.cancel());
+      }
+      _fileWatchSubscriptions.clear();
       _desktopRefreshTriggersStarted = false;
     });
     final appsRepository = ref.watch(desktopAppsRepositoryProvider);
@@ -165,7 +176,7 @@ class HomeGridController extends AsyncNotifier<HomeGridState> {
       return;
     }
 
-    if (!_launcherActive && reason != 'manual') {
+    if (!_launcherActive && reason != 'manual' && reason != 'file-watch') {
       return;
     }
 
@@ -262,19 +273,65 @@ class HomeGridController extends AsyncNotifier<HomeGridState> {
         return;
       }
       _desktopRefreshTriggersStarted = true;
-      _desktopRefreshTimer = Timer.periodic(_periodicRefreshInterval, (_) {
-        if (!_isBuildActive(generation) || !_launcherActive) {
-          return;
-        }
-        unawaited(refreshDesktopApps(reason: 'timer'));
-      });
+      _watchDesktopApplicationDirectories(generation);
     } on Object {
       _desktopRefreshTriggersStarted = false;
     }
   }
 
+  void _watchDesktopApplicationDirectories(int generation) {
+    final paths = ref.read(runtimePathsProvider);
+    for (final directory in paths.desktopApplicationDirs()) {
+      if (!directory.existsSync()) {
+        continue;
+      }
+      late final StreamSubscription<FileSystemEvent> subscription;
+      subscription = directory.watch(recursive: false).listen(
+        (event) {
+          // No path filtering here: same-directory renames (temp file →
+          // final name) surface as MoveEvents whose `path` is the *source*,
+          // which would incorrectly drop real .desktop installs. Any event in
+          // an application directory is cheap to reconcile after the
+          // debounce.
+          if (!_isBuildActive(generation)) {
+            return;
+          }
+          _scheduleFileWatchRefresh(generation);
+        },
+        onError: (Object _) {
+          unawaited(subscription.cancel());
+        },
+      );
+      _fileWatchSubscriptions.add(subscription);
+    }
+  }
+
+  void _scheduleFileWatchRefresh(int generation) {
+    _fileWatchDebounceTimer?.cancel();
+    _fileWatchDebounceTimer = Timer(_fileWatchDebounce, () {
+      _fileWatchDebounceTimer = null;
+      if (!_isBuildActive(generation)) {
+        return;
+      }
+      unawaited(refreshDesktopApps(reason: 'file-watch'));
+    });
+  }
+
   bool _isBuildActive(int generation) =>
       ref.mounted && generation == _buildGeneration;
+
+  /// Debug-only introspection for the file-watch refresh path.
+  Map<String, Object?> debugWatchStatus() {
+    return <String, Object?>{
+      'triggersStarted': _desktopRefreshTriggersStarted,
+      'subscriptions': _fileWatchSubscriptions.length,
+      'debouncePending': _fileWatchDebounceTimer?.isActive ?? false,
+      'launcherActive': _launcherActive,
+      'refreshInFlight': _desktopRefreshInFlight,
+      'lastDesktopRefresh': _lastDesktopRefresh?.toIso8601String(),
+      'buildGeneration': _buildGeneration,
+    };
+  }
 
   Future<List<DesktopApp>> _loadApplications(
     DesktopAppsRepository repository, {

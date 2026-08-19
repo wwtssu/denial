@@ -10,6 +10,7 @@ import 'input/input_layout.dart';
 import 'launcher/home_surface.dart';
 import 'localization/denial_localizations.dart';
 import 'models/denial_window.dart';
+import 'services/debug_control_server.dart';
 import 'settings/settings_controller.dart';
 import 'settings/shell_settings.dart';
 import 'state/cursor_theme.dart';
@@ -77,9 +78,18 @@ class DenialShellApp extends ConsumerStatefulWidget {
 }
 
 class _DenialShellAppState extends ConsumerState<DenialShellApp> {
+  DebugControlServer? _debugControlServer;
+
   @override
   void initState() {
     super.initState();
+    unawaited(
+      DebugControlServer.start(ref).then((server) {
+        _debugControlServer = server;
+      }).catchError((Object error) {
+        debugPrint('denia debug control: failed to start: $error');
+      }),
+    );
     ref.listenManual(
       shellSettingsProvider.select((settings) => settings.layout),
       (_, layout) => _scheduleLayoutSync(layout),
@@ -90,6 +100,13 @@ class _DenialShellAppState extends ConsumerState<DenialShellApp> {
       (_, power) => _schedulePowerSync(power),
       fireImmediately: true,
     );
+  }
+
+  @override
+  void dispose() {
+    unawaited(_debugControlServer?.close());
+    _debugControlServer = null;
+    super.dispose();
   }
 
   void _scheduleLayoutSync(ShellLayoutSettings layout) {
