@@ -703,14 +703,25 @@ impl WaylandFrontend {
         // region list as client surfaces. They intentionally have no Smithay
         // input target: once the topmost hit is local, stop traversal so a
         // covered Wayland client cannot receive the event through it.
-        if layout
+        if let Some(hit) = layout
             .windows
             .iter()
             .find(|region| region_accepts_input(region, scene_position))
-            .is_some_and(|region| self.local_windows.contains(region.window_id))
         {
-            self.client_input_route_cache = None;
-            return None;
+            let is_local = self.local_windows.contains(hit.window_id);
+            info!(
+                window_id = hit.window_id,
+                object_id = hit.object_id,
+                surface_id = hit.surface_id,
+                z = hit.z,
+                is_local,
+                rect = ?hit.rect,
+                "input hit test at {scene_position:?}"
+            );
+            if is_local {
+                self.client_input_route_cache = None;
+                return None;
+            }
         }
 
         // Pointer samples commonly arrive much faster than Flutter layout
@@ -767,6 +778,13 @@ impl WaylandFrontend {
             });
 
         if let Some(route) = route {
+            info!(
+                window_id = route.region.window_id,
+                surface_id = route.region.surface_id,
+                z = route.region.z,
+                rect = ?route.region.rect,
+                "created client input route at {scene_position:?}"
+            );
             self.client_input_route_cache = Some(route);
             return self.client_input_route_cache.as_ref();
         }

@@ -4,10 +4,12 @@
 //! bounded and verified before it is inspected; generated unchecked accessors
 //! never see bytes supplied directly by Flutter.
 
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::ffi::CStr;
 use std::fmt;
+
+use tracing::warn;
 
 use denial_core::topology::{AtlasPlan, OutputId, SCALE_BASE, TopologySnapshot};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
@@ -41,7 +43,7 @@ mod generated {
     ));
 }
 
-use generated::denial::wire as fb;
+pub use generated::denial::wire as fb;
 
 pub const TO_NATIVE_CHANNEL: &str = "denial/wire/to_native";
 pub const TO_FLUTTER_CHANNEL: &CStr = c"denial/wire/to_flutter";
@@ -1684,14 +1686,39 @@ fn decode_input_layout(
     if let Some(windows) = windows {
         decoded.windows.reserve(windows.len());
         identities.reserve(windows.len());
+        // A window clipped into several visible fragments legitimately
+        // repeats its own surface id across those regions. Only a surface
+        // shared by two *different* windows is invalid: each surface may be
+        // owned by exactly one window.
+        let mut surface_owners: HashMap<u64, u64> = HashMap::new();
         let mut previous: Option<(i32, u64)> = None;
         for index in 0..windows.len() {
             let window = windows.get(index);
             if window.object_id() == 0 || window.surface_id() == 0 || window.window_id() == 0 {
+                warn!(
+                    index,
+                    object_id = window.object_id(),
+                    surface_id = window.surface_id(),
+                    window_id = window.window_id(),
+                    "rejected input window with a zero identity field"
+                );
                 return Err(WireError::Identity);
             }
-            if !identities.insert(window.surface_id()) {
-                return Err(WireError::Identity);
+            match surface_owners.get(&window.surface_id()) {
+                Some(owner) if *owner != window.window_id() => {
+                    warn!(
+                        index,
+                        surface_id = window.surface_id(),
+                        window_id = window.window_id(),
+                        owner,
+                        "rejected input window sharing a surface with another window"
+                    );
+                    return Err(WireError::Identity);
+                }
+                Some(_) => {}
+                None => {
+                    surface_owners.insert(window.surface_id(), window.window_id());
+                }
             }
             if previous.is_some_and(|(z, surface_id)| {
                 z < window.z() || (z == window.z() && surface_id < window.surface_id())
@@ -1722,6 +1749,11 @@ fn decode_input_layout(
         for index in 0..visible_surface_ids.len() {
             let surface_id = visible_surface_ids.get(index);
             if surface_id == 0 || !identities.insert(surface_id) {
+                warn!(
+                    index,
+                    surface_id,
+                    "rejected input layout with a zero or duplicate visible surface id"
+                );
                 return Err(WireError::Identity);
             }
             decoded.visible_surface_ids.push(surface_id);
