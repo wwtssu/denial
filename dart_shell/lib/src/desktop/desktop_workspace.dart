@@ -12,6 +12,10 @@ import 'desktop_overview_layout.dart';
 
 abstract final class DesktopMetrics {
   static const double frameBorder = 1.0;
+
+  /// Height of the shell-owned title bar drawn for server-side-decorated
+  /// windows. The client region of such windows starts below this strip.
+  static const double titleBarHeight = 36.0;
   static const double panelGap = 12.0;
   static const double panelMargin = 14.0;
   static const double edgeTriggerWidth = 8.0;
@@ -155,7 +159,21 @@ class DesktopWindowPlacement {
   double get frameBorder =>
       fullscreen || !serverSideDecorated ? 0.0 : DesktopMetrics.frameBorder;
 
-  Rect get contentRect => frame.deflate(frameBorder);
+  Rect get contentRect {
+    final inset = frameBorder;
+    final rect = frame.deflate(inset);
+    if (fullscreen || !serverSideDecorated) {
+      return rect;
+    }
+    // Server-side-decorated windows reserve the top strip of the frame for
+    // the shell-owned title bar; the client region starts below it.
+    return Rect.fromLTRB(
+      rect.left,
+      rect.top + DesktopMetrics.titleBarHeight,
+      rect.right,
+      rect.bottom,
+    );
+  }
 
   DesktopWindowPlacement copyWith({
     Rect? frame,
@@ -1189,7 +1207,9 @@ class DesktopWorkspaceController extends Notifier<DesktopWorkspaceState> {
     }
     return Rect.fromLTRB(
       contentRect.left - DesktopMetrics.frameBorder,
-      contentRect.top - DesktopMetrics.frameBorder,
+      contentRect.top -
+          DesktopMetrics.frameBorder -
+          DesktopMetrics.titleBarHeight,
       contentRect.right + DesktopMetrics.frameBorder,
       contentRect.bottom + DesktopMetrics.frameBorder,
     );

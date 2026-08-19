@@ -19,12 +19,16 @@ class DesktopWindowFrameLayers extends StatelessWidget {
     required this.windowId,
     required this.borderPainter,
     required this.child,
+    this.titleBar,
     super.key,
   });
 
   final int windowId;
   final CustomPainter borderPainter;
   final Widget child;
+
+  /// Optional shell-owned title bar drawn above the client region.
+  final Widget? titleBar;
 
   @override
   Widget build(BuildContext context) {
@@ -46,6 +50,14 @@ class DesktopWindowFrameLayers extends StatelessWidget {
           ),
         ),
         child,
+        if (titleBar case final Widget titleBar?)
+          Positioned(
+            top: DesktopMetrics.frameBorder,
+            left: DesktopMetrics.frameBorder,
+            right: DesktopMetrics.frameBorder,
+            height: DesktopMetrics.titleBarHeight,
+            child: titleBar,
+          ),
         IgnorePointer(child: CustomPaint(painter: borderPainter)),
       ],
     );

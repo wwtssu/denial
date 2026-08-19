@@ -66,6 +66,7 @@ import 'desktop_system_bar.dart';
 import 'desktop_texture_resize.dart';
 import 'desktop_window_coordinator.dart';
 import 'desktop_window_frame_painter.dart';
+import 'desktop_window_title_bar.dart';
 import 'desktop_window_render_telemetry.dart';
 import 'desktop_workspace.dart';
 
@@ -2459,7 +2460,7 @@ class _DesktopWindowFrame extends ConsumerWidget {
         ? theme.focusedWindowOpacity
         : theme.unfocusedWindowOpacity;
     final targetContentSize = drawsServerFrame
-        ? frame.deflate(DesktopMetrics.frameBorder).size
+        ? placement.contentRect.size
         : frame.size;
     final resizing = desktopTextureNeedsResizeSmoothing(
       targetSize: targetContentSize,
@@ -2526,7 +2527,11 @@ class _DesktopWindowFrame extends ConsumerWidget {
                             // The native client keeps its real geometry
                             // during overview; only its live texture scales.
                             padding: drawsServerFrame
-                                ? const EdgeInsets.all(
+                                ? const EdgeInsets.fromLTRB(
+                                    DesktopMetrics.frameBorder,
+                                    DesktopMetrics.frameBorder +
+                                        DesktopMetrics.titleBarHeight,
+                                    DesktopMetrics.frameBorder,
                                     DesktopMetrics.frameBorder,
                                   )
                                 : EdgeInsets.zero,
@@ -2550,6 +2555,11 @@ class _DesktopWindowFrame extends ConsumerWidget {
                         }
                         return DesktopWindowFrameLayers(
                           windowId: window.objectId,
+                          titleBar: DesktopWindowTitleBar(
+                            window: window,
+                            title: localizedWindowTitle(context, window),
+                            maximized: placement.restoreFrame != null,
+                          ),
                           borderPainter: _DesktopWindowBorderPainter(
                             windowId: window.objectId,
                             color: window.pinned
