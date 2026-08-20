@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind, PointerExitEvent;
 import 'package:flutter/services.dart'
     show MouseCursor, MouseCursorSession, SystemChannels;
 import 'package:flutter/widgets.dart';
@@ -58,30 +57,39 @@ String _normalizeShellCursorShape(String shape) {
 /// Point-in-rect hit test mirroring the compositor's `resize_edge_at_border`.
 ///
 /// Returns the platform cursor shape for the window edge band containing
-/// [position], or null when the pointer is outside every window's 12px inset
-/// band. Corner bands win over single edges and left/right win over top/
-/// bottom, matching the compositor's match order. Frames are expected
+/// [position], or null when the pointer is outside every window's band.
+/// Corner bands win over single edges and left/right win over top/bottom,
+/// matching the compositor's match order. Frames are expected
 /// topmost-first, so an overlapping window wins by being checked first.
+///
+/// Each frame is first expanded by 8px — the window's transparent edge
+/// band, mirroring the compositor: the input shape is a slightly larger
+/// window whose margin is never rendered. The band is the 12px inset of
+/// that expanded rect, i.e. an asymmetric safe area: 8px outside the
+/// visual edge, 4px inside. One shared value with the compositor's press
+/// band, so the cursor never claims a press the compositor would refuse.
 String? _hitTestResizeShape(Offset position, List<Rect>? frames) {
   if (frames == null || frames.isEmpty) {
     return null;
   }
+  const edgeBand = 8.0;
   const inset = 12.0;
   for (final frame in frames) {
+    final band = frame.inflate(edgeBand);
     final x = position.dx;
     final y = position.dy;
     // Closed interval: the pointer may sit exactly on the right/bottom edge.
-    final inside = x >= frame.left &&
-        x <= frame.right &&
-        y >= frame.top &&
-        y <= frame.bottom;
+    final inside = x >= band.left &&
+        x <= band.right &&
+        y >= band.top &&
+        y <= band.bottom;
     if (!inside) {
       continue;
     }
-    final nearLeft = x - frame.left <= inset;
-    final nearRight = frame.right - x <= inset;
-    final nearTop = y - frame.top <= inset;
-    final nearBottom = frame.bottom - y <= inset;
+    final nearLeft = x - band.left <= inset;
+    final nearRight = band.right - x <= inset;
+    final nearTop = y - band.top <= inset;
+    final nearBottom = band.bottom - y <= inset;
     if (nearLeft && !nearRight && nearTop && !nearBottom) {
       return 'nwse-resize';
     }
@@ -223,10 +231,12 @@ class ShellCursorHost extends StatefulWidget {
   /// Pointer positions inside a native client surface never reach Flutter as
   /// hover events, so `MouseRegion` cannot drive the resize cursor there.
   /// Instead the compositor-broadcast [platformCursorPositions] stream is
-  /// hit-tested against these frames: when the pointer sits inside a window's
-  /// 12px edge band the shell claims the cursor and shows the matching
-  /// resize shape, mirroring the compositor's own `resize_edge_at_border`
-  /// semantics. Null disables the hit test.
+  /// hit-tested against these frames; positions on the transparent edge
+  /// band (8px outside a frame, which routes to Flutter) are covered by the
+  /// same hit test running on the hover path. The band matches the
+  /// compositor's `resize_edge_at_border` semantics: the frame expanded by
+  /// 8px with a 12px inset — 8px outside the visual edge, 4px inside. Null
+  /// disables the hit test.
   final List<Rect>? windowFrames;
 
   /// Target size of the longest cursor-artwork edge in physical pixels.
@@ -252,8 +262,9 @@ class _ShellCursorHostState extends State<ShellCursorHost> {
   /// Shape currently claimed by the edge-band hit test, or null when inactive.
   ///
   /// While non-null the shell overrides the cursor for positions inside a
-  /// window's 12px edge band even though the pointer is inside a client
-  /// surface (where Flutter hover events never arrive).
+  /// window's edge band even though the pointer is inside a client surface
+  /// (where Flutter hover events never arrive). The rendered cursor stays
+  /// fully pointer-following — no edge anchoring.
   String? _hitTestShape;
 
   /// Cursor kind captured when the hit test first claimed the pointer,
@@ -349,8 +360,19 @@ class _ShellCursorHostState extends State<ShellCursorHost> {
 
   void _subscribeToPlatformCursorShapes() {
     _platformCursorSubscription = widget.platformCursorShapes?.listen(
-      _cursorController.activatePlatformShape,
+      _onPlatformCursorShape,
     );
+  }
+
+  void _onPlatformCursorShape(String shape) {
+    // While the edge-band hit test claims the pointer, incoming compositor
+    // cursor shapes (client cursor updates, MouseRegion echoes) must not
+    // override the resize claim; they resume once the pointer leaves the
+    // band.
+    if (_hitTestShape != null) {
+      return;
+    }
+    _cursorController.activatePlatformShape(shape);
   }
 
   void _subscribeToPlatformCursorPositions() {
@@ -403,46 +425,33 @@ class _ShellCursorHostState extends State<ShellCursorHost> {
   void _applyHitTest(Offset position) {
     final shape = _hitTestResizeShape(position, widget.windowFrames);
     if (shape != null) {
-      _preHitTestKind ??= _cursorController.kind;
-      _hitTestShape = shape;
+      if (_preHitTestKind == null) {
+        _preHitTestKind = _cursorController.kind;
+      }
+      if (shape != _hitTestShape) {
+        setState(() => _hitTestShape = shape);
+      }
+      // Runs unconditionally: the shell's kind may have been overridden by
+      // a MouseRegion claim while the pointer was away from this band.
       _cursorController.activatePlatformShape(shape);
     } else if (_hitTestShape != null) {
+      _clearHitTest();
+    }
+  }
+
+  /// Releases the edge-band claim: restores the pre-claim cursor kind so the
+  /// client's own cursor (or the last shell claim) takes over again.
+  void _clearHitTest() {
+    if (_hitTestShape == null) {
+      return;
+    }
+    setState(() {
       _hitTestShape = null;
       _cursorController.restoreKind(
         _preHitTestKind ?? ShellCursorKind.normal,
       );
       _preHitTestKind = null;
-    }
-  }
-
-  void _updatePosition(PointerEvent event) {
-    if (event.kind != PointerDeviceKind.mouse ||
-        event.localPosition == _position) {
-      return;
-    }
-    final wasHidden = _position == null;
-    setState(() {
-      _position = event.localPosition;
-      if (wasHidden) {
-        _frame = 0;
-      }
     });
-    if (wasHidden) {
-      _syncFrameTimer();
-    }
-  }
-
-  void _handleExit(PointerExitEvent event) {
-    // A Remove is also the compositor's endpoint boundary when a native
-    // client takes the pointer. Keep the last rendered position in that case;
-    // Rust's non-hit-testing position stream takes over on client motion.
-    if (widget.platformCursorPositions != null ||
-        event.kind != PointerDeviceKind.mouse ||
-        _position == null) {
-      return;
-    }
-    setState(() => _position = null);
-    _syncFrameTimer();
   }
 
   void _syncFrameTimer() {
@@ -488,17 +497,20 @@ class _ShellCursorHostState extends State<ShellCursorHost> {
     final hotspot = (assetRole?.hotspot ?? Offset.zero) * artworkScale;
     return MouseRegion(
       opaque: false,
+      // The root claim is the "plain shell space" fallback: it keeps the
+      // compositor echo in sync when the pointer leaves special regions
+      // (title bar move cursor, resize bands). It must not fight the
+      // edge-band hit test — incoming echoes are filtered while the band
+      // is active, so the resize claim always wins on the band itself.
+      //
+      // No hover/pointer callbacks: the pointer position is driven
+      // exclusively by the compositor's CursorPosition stream, which now
+      // broadcasts on every visible target (client surfaces and the Flutter
+      // scene), so the shell cursor never freezes on stale positions.
       cursor: ShellMouseCursors.normal,
-      onHover: _updatePosition,
-      onExit: _handleExit,
-      child: Listener(
-        behavior: HitTestBehavior.translucent,
-        onPointerDown: _updatePosition,
-        onPointerMove: _updatePosition,
-        onPointerUp: _updatePosition,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
             widget.child,
             if (position != null && dragIcon != null)
               Positioned(
@@ -540,7 +552,6 @@ class _ShellCursorHostState extends State<ShellCursorHost> {
               ),
           ],
         ),
-      ),
     );
   }
 }

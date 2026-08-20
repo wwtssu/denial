@@ -1346,8 +1346,13 @@ impl WaylandFrontend {
             }
         };
         self.pending_cursor_shape = Some(cursor_shape_for_modality(visible, active_shape));
+        // Broadcast the pointer position for every visible target — client
+        // surfaces *and* the Flutter scene. The shell renders its own cursor
+        // and hit-tests edge bands against this stream; without the Flutter
+        // case the cursor would freeze at the last client-surface position
+        // while the pointer roams the title bar, edge band, or desktop.
         self.pending_cursor_position = cursor_position_for_modality(
-            visible && matches!(self.routed_pointer_target, RoutedPointerTarget::Client(_)),
+            visible,
             self.flutter_scene_pointer_position(),
         );
     }

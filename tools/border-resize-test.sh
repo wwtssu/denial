@@ -82,13 +82,13 @@ shrink_window() {
       break
     fi
     if (( ww > 810 )); then
-      # Right edge: press 6px inside the content edge, drag left to 800 wide.
-      drag_to $((wx + ww - 6)) $((wy + 60)) $((wx + 800 - 6)) $((wy + 60))
+      # Right edge: press 3px inside the content edge, drag left to 800 wide.
+      drag_to $((wx + ww - 3)) $((wy + 60)) $((wx + 800 - 3)) $((wy + 60))
     fi
     read wx wy ww wh < <(geo_vals)
     if (( wh > 570 )); then
-      # Bottom edge: press 6px above the content edge, drag up to 560 tall.
-      drag_to $((wx + ww / 2)) $((wy + wh - 6)) $((wx + ww / 2)) $((wy + 560 - 6))
+      # Bottom edge: press 3px above the content edge, drag up to 560 tall.
+      drag_to $((wx + ww / 2)) $((wy + wh - 3)) $((wx + ww / 2)) $((wy + 560 - 3))
     fi
   done
   ui '{"key":"window","action":"center"}' >/dev/null
@@ -130,10 +130,10 @@ for ((i = 1; i <= ITER; i++)); do
   fi
 
   case "$edge" in
-    top)    tx=$((wx + ww / 2)); ty=$((wy + 6)) ;;
-    bottom) tx=$((wx + ww / 2)); ty=$((wy + wh - 6)) ;;
-    left)   tx=$((wx + 6));      ty=$((wy + wh / 2)) ;;
-    right)  tx=$((wx + ww - 6)); ty=$((wy + wh / 2)) ;;
+    top)    tx=$((wx + ww / 2)); ty=$((wy + 3)) ;;
+    bottom) tx=$((wx + ww / 2)); ty=$((wy + wh - 3)) ;;
+    left)   tx=$((wx + 3));      ty=$((wy + wh / 2)) ;;
+    right)  tx=$((wx + ww - 3)); ty=$((wy + wh / 2)) ;;
   esac
   echo "  选边: $edge  (目标点 ${tx},${ty})"
 

@@ -5,12 +5,17 @@ import 'desktop_workspace.dart';
 /// Resize-edge hover cursors for a window frame.
 ///
 /// The visible border is a 1px hairline, far too thin to hover. Each side of
-/// the frame exposes an ~8px band that switches the cursor to the matching
+/// the frame exposes an inset band that switches the cursor to the matching
 /// resize shape. The bands run the full height of the frame including the
 /// title bar's top edge and side strips — the window's top border *is* the
 /// title bar's top edge, so that strip participates in resize too. Only the
 /// title bar's body (between the bands) stays a pure move surface (see
 /// DesktopWindowTitleBar).
+///
+/// This covers the *inside* 4px of the asymmetric edge band (8px outside /
+/// 4px inside the visual edge). The outside 8px is a transparent band of
+/// the window's expanded input rect, handled by the shell-level cursor hit
+/// test on the hover path.
 ///
 /// Cursors only — pointer events still reach the client below (MouseRegion
 /// does not participate in gesture arbitration). The actual resize grab is
@@ -19,7 +24,7 @@ import 'desktop_workspace.dart';
 class DesktopWindowResizeEdges extends StatelessWidget {
   const DesktopWindowResizeEdges({super.key});
 
-  static const double edgeWidth = 8.0;
+  static const double edgeWidth = 4.0;
 
   @override
   Widget build(BuildContext context) {

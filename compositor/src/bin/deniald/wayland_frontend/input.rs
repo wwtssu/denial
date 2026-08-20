@@ -571,6 +571,14 @@ fn resize_edge_for_geometry(
 /// therefore resizes only when the cursor is actually on an edge — the
 /// desktop-standard interaction, no modifier required. The window's top
 /// border is the title bar's top edge, so that strip participates too.
+///
+/// The geometry is the window's *expanded* input rect: 8px outside the
+/// visual frame (the transparent edge band — the window input shape is a
+/// slightly larger window whose margin is never rendered) plus the frame
+/// itself. The band is the 12px inset of that expanded rect, i.e. an
+/// asymmetric safe area: 8px outside the visual edge, 4px inside. One shared
+/// value with the shell's cursor hit test, so the cursor never claims a
+/// press the compositor would refuse.
 #[cfg(feature = "flutter")]
 fn resize_edge_at_border(
     pointer: Point<f64, Logical>,
@@ -628,7 +636,9 @@ fn begin_border_resize_grab(
     // Resolve the owning window region: content hits carry a route, local
     // window hits carry the region, decoration hits resolve through the
     // layout (a covered client can never be reached through a higher
-    // window's title bar, mirroring input_route).
+    // window's title bar, mirroring input_route). The transparent edge band
+    // (8px outside the visual frame) resolves through the same lookup by
+    // matching against the expanded input rect.
     let (route, region) = match target {
         InputTarget::Client(route) => (Some(route.clone()), route.region),
         InputTarget::Flutter => {
@@ -648,6 +658,14 @@ fn begin_border_resize_grab(
                                 && decoration.contains(scene_position.x, scene_position.y)
                                 && region.visible()
                                 && region.hit_test_enabled())
+                            || (region.visible()
+                                && region.hit_test_enabled()
+                                && scene_position.x >= region.rect.x - 8.0
+                                && scene_position.x
+                                    <= region.rect.x + region.rect.width + 8.0
+                                && scene_position.y >= region.rect.y - 8.0
+                                && scene_position.y
+                                    <= region.rect.y + region.rect.height + 8.0)
                     })
                 else {
                     return false;
@@ -682,14 +700,17 @@ fn begin_border_resize_grab(
     if region.geometry_locked() {
         return false;
     }
+    // The border band lives on the window's expanded input rect: the visual
+    // frame plus the transparent 8px edge band, so the asymmetric safe area
+    // (8px outside / 4px inside the visual edge) is a uniform 12px inset.
     let global_geometry = Rectangle::new(
         Point::from((
-            (region.rect.x + frontend.atlas_origin.x).round() as i32,
-            (region.rect.y + frontend.atlas_origin.y).round() as i32,
+            (region.rect.x - 8.0 + frontend.atlas_origin.x).round() as i32,
+            (region.rect.y - 8.0 + frontend.atlas_origin.y).round() as i32,
         )),
         (
-            region.rect.width.round() as i32,
-            region.rect.height.round() as i32,
+            (region.rect.width + 16.0).round() as i32,
+            (region.rect.height + 16.0).round() as i32,
         )
             .into(),
     );
@@ -2743,7 +2764,17 @@ fn deliver_routed_flutter_pointer_motion(state: &mut RuntimeState, target: Route
         return;
     };
     match target {
-        RoutedPointerTarget::Flutter => state.flutter_input.handle_pointer_motion_at(x, y),
+        RoutedPointerTarget::Flutter => {
+            // Broadcast the pointer position for the shell scene too: the
+            // Flutter cursor layer renders from this stream and hit-tests
+            // its edge bands against it. Without this case the cursor would
+            // freeze at the last client-surface position while the pointer
+            // roams the title bar, edge band, or desktop.
+            if let Some(frontend) = state.wayland.as_mut() {
+                frontend.queue_cursor_position();
+            }
+            state.flutter_input.handle_pointer_motion_at(x, y);
+        }
         RoutedPointerTarget::Client(_) => {
             if let Some(frontend) = state.wayland.as_mut() {
                 frontend.queue_cursor_position();

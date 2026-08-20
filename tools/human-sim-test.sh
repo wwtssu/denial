@@ -75,15 +75,15 @@ shrink_window() {
       break
     fi
     if ((ww > 810)); then
-      DENIA_INPUT_FROM="$((wx + ww - 6)),$((wy + 60))" "$DENIA_INPUT" adrag "$((wx + 800 - 6))" "$((wy + 60))"
-      PX=$((wx + 800 - 6))
+      DENIA_INPUT_FROM="$((wx + ww - 3)),$((wy + 60))" "$DENIA_INPUT" adrag "$((wx + 800 - 3))" "$((wy + 60))"
+      PX=$((wx + 800 - 3))
       sleep 0.9
     fi
     read wx wy ww wh < <(geo_vals)
     if ((wh > 570)); then
-      DENIA_INPUT_FROM="$((wx + ww / 2)),$((wy + wh - 6))" "$DENIA_INPUT" adrag "$((wx + ww / 2))" "$((wy + 560 - 6))"
+      DENIA_INPUT_FROM="$((wx + ww / 2)),$((wy + wh - 3))" "$DENIA_INPUT" adrag "$((wx + ww / 2))" "$((wy + 560 - 3))"
       PX=$((wx + ww / 2))
-      PY=$((wy + 560 - 6))
+      PY=$((wy + 560 - 3))
       sleep 0.9
     fi
   done
@@ -124,17 +124,17 @@ for ((i = 1; i <= ITER; i++)); do
 
   edge="${EDGES[$(((i - 1) % 4))]}"
   case "$edge" in
-    top)    tx=$((wx + ww / 2)); ty=$((wy + 6)) ;;
-    bottom) tx=$((wx + ww / 2)); ty=$((wy + wh - 6)) ;;
-    left)   tx=$((wx + 6));      ty=$((wy + wh / 2)) ;;
-    right)  tx=$((wx + ww - 6)); ty=$((wy + wh / 2)) ;;
+    top)    tx=$((wx + ww / 2)); ty=$((wy + 3)) ;;
+    bottom) tx=$((wx + ww / 2)); ty=$((wy + wh - 3)) ;;
+    left)   tx=$((wx + 3));      ty=$((wy + wh / 2)) ;;
+    right)  tx=$((wx + ww - 3)); ty=$((wy + wh / 2)) ;;
   esac
 
   d=$((120 + RANDOM % 130))
   case "$edge" in
-    top)    maxd=$((ty - 6)) ;;
+    top)    maxd=$((ty - 3)) ;;
     bottom) maxd=$((1274 - ty)) ;;
-    left)   maxd=$((tx - 6)) ;;
+    left)   maxd=$((tx - 3)) ;;
     right)  maxd=$((1914 - tx)) ;;
   esac
   ((d > maxd)) && d=$maxd
