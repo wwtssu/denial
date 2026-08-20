@@ -234,7 +234,12 @@ class _DesktopInputLayoutPublisherState
           // surface tree. The primary texture may be a full-window child and
           // is a rendering choice, not an input target.
           surfaceId: window.objectId,
-          rect: placement.contentRect,
+          // One geometry for the whole window: the frame (including the
+          // shell-drawn title bar) is the input region. shellRegions subtract
+          // the same frame, so the window owns its decoration and the border
+          // band around the content. The parallel decorations list only
+          // marks the title-bar strip for shell routing.
+          rect: placement.frame,
           sourceRect: window.contentCoordinateRect,
           z: baseZ,
           geometryLocked: placement.fullscreen,
@@ -305,19 +310,23 @@ class DesktopWindowConfigureTracker {
       height: contentRect.height.round().clamp(64, 16384),
     );
     final previous = _configured[objectId];
-    _configured[objectId] = geometry;
     if (previous == null) {
       // The native compositor owns initial placement and sizing. Seed from
       // the received geometry instead of echoing a newly discovered window.
+      _configured[objectId] = geometry;
       return null;
     }
     if (nativeDragActive) {
-      // Rust is the sole writer during a native move/resize grab.
+      // Rust is the sole writer during a native move/resize grab. Do NOT
+      // update _configured here: the value seen mid-grab is never sent, so
+      // remembering it would make the post-grab equality check skip the
+      // final configure (the "last seen == current" dedup bug).
       return null;
     }
     if (previous == geometry) {
       return null;
     }
+    _configured[objectId] = geometry;
     return Rect.fromLTWH(
       geometry.left.toDouble(),
       geometry.top.toDouble(),

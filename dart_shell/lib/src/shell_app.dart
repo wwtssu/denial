@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'desktop/desktop_input_layout_publisher.dart';
 import 'desktop/desktop_shell.dart';
+import 'desktop/desktop_workspace.dart';
 import 'input/input_layout.dart';
 import 'launcher/home_surface.dart';
 import 'localization/denial_localizations.dart';
@@ -194,6 +195,20 @@ class _DenialShellAppState extends ConsumerState<DenialShellApp> {
     final cursorShapes = bridge.cursorShapes;
     final cursorPositions = bridge.cursorPositions;
     final dragIcons = bridge.dragIcons;
+    // Window frames (topmost first) for the cursor edge-band hit test. The
+    // overview layout and minimized/fullscreen windows are excluded: their
+    // frames do not represent a resizable desktop surface.
+    final cursorHitTestFrames = ref.watch(
+      desktopWorkspaceProvider.select(
+        (state) => state.overviewActive
+            ? const <Rect>[]
+            : (state.placements.values.toList()
+                  ..sort((a, b) => b.z.compareTo(a.z)))
+                .where((p) => !p.minimized && !p.fullscreen)
+                .map((p) => p.frame)
+                .toList(),
+      ),
+    );
     final hideCursor = ref.watch(
       screenshotSelectionProvider.select(
         (session) => session?.hidesCursor ?? false,
@@ -247,6 +262,7 @@ class _DenialShellAppState extends ConsumerState<DenialShellApp> {
       platformCursorShapes: cursorShapes,
       platformCursorPositions: cursorPositions,
       platformDragIcons: dragIcons,
+      windowFrames: cursorHitTestFrames,
       hideCursor: hideCursor,
       displayLayout: displayLayout,
       cursorSize: settings.appearance.cursorSize,

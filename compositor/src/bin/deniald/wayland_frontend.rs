@@ -1239,6 +1239,15 @@ impl WaylandFrontend {
 
     #[cfg(feature = "flutter")]
     pub(super) fn request_flutter_cursor_shape(&mut self, shape: &'static str) {
+        tracing::info!(
+            shape,
+            target = ?self.routed_pointer_target,
+            visible = self.pointer_cursor_visible,
+            drag = self.clipboard_drag_active,
+            x = self.pointer_location.x,
+            y = self.pointer_location.y,
+            "flutter cursor shape request"
+        );
         if !self.pointer_cursor_visible {
             return;
         }

@@ -55,6 +55,61 @@ String _normalizeShellCursorShape(String shape) {
   return shape.trim().toLowerCase().replaceAll('_', '-');
 }
 
+/// Point-in-rect hit test mirroring the compositor's `resize_edge_at_border`.
+///
+/// Returns the platform cursor shape for the window edge band containing
+/// [position], or null when the pointer is outside every window's 12px inset
+/// band. Corner bands win over single edges and left/right win over top/
+/// bottom, matching the compositor's match order. Frames are expected
+/// topmost-first, so an overlapping window wins by being checked first.
+String? _hitTestResizeShape(Offset position, List<Rect>? frames) {
+  if (frames == null || frames.isEmpty) {
+    return null;
+  }
+  const inset = 12.0;
+  for (final frame in frames) {
+    final x = position.dx;
+    final y = position.dy;
+    // Closed interval: the pointer may sit exactly on the right/bottom edge.
+    final inside = x >= frame.left &&
+        x <= frame.right &&
+        y >= frame.top &&
+        y <= frame.bottom;
+    if (!inside) {
+      continue;
+    }
+    final nearLeft = x - frame.left <= inset;
+    final nearRight = frame.right - x <= inset;
+    final nearTop = y - frame.top <= inset;
+    final nearBottom = frame.bottom - y <= inset;
+    if (nearLeft && !nearRight && nearTop && !nearBottom) {
+      return 'nwse-resize';
+    }
+    if (nearLeft && !nearRight && !nearTop && nearBottom) {
+      return 'nesw-resize';
+    }
+    if (!nearLeft && nearRight && nearTop && !nearBottom) {
+      return 'nesw-resize';
+    }
+    if (!nearLeft && nearRight && !nearTop && nearBottom) {
+      return 'nwse-resize';
+    }
+    if (nearLeft) {
+      return 'ew-resize';
+    }
+    if (nearRight) {
+      return 'ew-resize';
+    }
+    if (nearTop) {
+      return 'ns-resize';
+    }
+    if (nearBottom) {
+      return 'ns-resize';
+    }
+  }
+  return null;
+}
+
 /// Resolves native Wayland/XCursor names and Flutter system cursor names to
 /// the closest artwork supplied by the active shell cursor theme.
 ShellCursorKind shellCursorKindForPlatformShape(String shape) {
@@ -152,6 +207,7 @@ class ShellCursorHost extends StatefulWidget {
     this.hideCursor = false,
     this.displayLayout,
     this.cursorSize = shellCursorDefaultSize,
+    this.windowFrames,
   });
 
   final Widget child;
@@ -161,6 +217,17 @@ class ShellCursorHost extends StatefulWidget {
   final Stream<DenialDragIcon?>? platformDragIcons;
   final bool hideCursor;
   final DisplayLayout? displayLayout;
+
+  /// Live window frames (topmost first) used by the edge-band hit test.
+  ///
+  /// Pointer positions inside a native client surface never reach Flutter as
+  /// hover events, so `MouseRegion` cannot drive the resize cursor there.
+  /// Instead the compositor-broadcast [platformCursorPositions] stream is
+  /// hit-tested against these frames: when the pointer sits inside a window's
+  /// 12px edge band the shell claims the cursor and shows the matching
+  /// resize shape, mirroring the compositor's own `resize_edge_at_border`
+  /// semantics. Null disables the hit test.
+  final List<Rect>? windowFrames;
 
   /// Target size of the longest cursor-artwork edge in physical pixels.
   final double cursorSize;
@@ -181,6 +248,17 @@ class _ShellCursorHostState extends State<ShellCursorHost> {
   DenialDragIcon? _dragIcon;
   int _frame = 0;
   bool _assetsPrecached = false;
+
+  /// Shape currently claimed by the edge-band hit test, or null when inactive.
+  ///
+  /// While non-null the shell overrides the cursor for positions inside a
+  /// window's 12px edge band even though the pointer is inside a client
+  /// surface (where Flutter hover events never arrive).
+  String? _hitTestShape;
+
+  /// Cursor kind captured when the hit test first claimed the pointer,
+  /// restored when the pointer leaves every edge band.
+  ShellCursorKind? _preHitTestKind;
 
   @override
   void initState() {
@@ -213,6 +291,14 @@ class _ShellCursorHostState extends State<ShellCursorHost> {
     if (oldWidget.platformDragIcons != widget.platformDragIcons) {
       unawaited(_platformDragIconSubscription?.cancel());
       _subscribeToPlatformDragIcons();
+    }
+    if (oldWidget.windowFrames != widget.windowFrames) {
+      // A window moved or resized underneath a stationary pointer: the band
+      // membership may have changed without any new position broadcast.
+      final position = _position;
+      if (position != null) {
+        _applyHitTest(position);
+      }
     }
     if (oldWidget.theme == widget.theme) {
       return;
@@ -291,17 +377,41 @@ class _ShellCursorHostState extends State<ShellCursorHost> {
       return;
     }
     final wasHidden = _position == null;
-    if (position == _position) {
-      return;
-    }
-    setState(() {
-      _position = position;
+    if (position != _position) {
+      setState(() {
+        _position = position;
+        if (wasHidden) {
+          _frame = 0;
+        }
+      });
       if (wasHidden) {
-        _frame = 0;
+        _syncFrameTimer();
       }
-    });
-    if (wasHidden) {
-      _syncFrameTimer();
+    }
+    // Runs on every broadcast even when the position is unchanged: window
+    // geometry may have moved underneath the pointer between broadcasts.
+    _applyHitTest(position);
+  }
+
+  /// Edge-band hit test over the compositor-broadcast pointer position.
+  ///
+  /// When the pointer sits inside a window's 12px inset band the shell claims
+  /// the cursor — the pointer is inside a client surface, so no Flutter hover
+  /// event ever fired. Once it leaves every band the previously active kind
+  /// is restored so the client's own cursor (or the last shell claim) takes
+  /// over again.
+  void _applyHitTest(Offset position) {
+    final shape = _hitTestResizeShape(position, widget.windowFrames);
+    if (shape != null) {
+      _preHitTestKind ??= _cursorController.kind;
+      _hitTestShape = shape;
+      _cursorController.activatePlatformShape(shape);
+    } else if (_hitTestShape != null) {
+      _hitTestShape = null;
+      _cursorController.restoreKind(
+        _preHitTestKind ?? ShellCursorKind.normal,
+      );
+      _preHitTestKind = null;
     }
   }
 
@@ -504,6 +614,18 @@ class _ShellCursorController extends ChangeNotifier {
     }
     _kind = kind;
     _visible = visible;
+    notifyListeners();
+  }
+
+  /// Restores a previously captured kind without touching visibility.
+  ///
+  /// Used by the edge-band hit test when the pointer leaves every window
+  /// band: the client's own cursor (or the last shell claim) takes over.
+  void restoreKind(ShellCursorKind kind) {
+    if (_kind == kind) {
+      return;
+    }
+    _kind = kind;
     notifyListeners();
   }
 }

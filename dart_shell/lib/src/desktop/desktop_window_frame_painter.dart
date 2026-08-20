@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 
 import '../theme/shell_theme.dart';
 import '../theme/tokens.dart';
+import 'desktop_window_resize_edges.dart';
 import 'desktop_window_render_telemetry.dart';
 import 'desktop_workspace.dart';
 
@@ -59,6 +60,7 @@ class DesktopWindowFrameLayers extends StatelessWidget {
             child: titleBar,
           ),
         IgnorePointer(child: CustomPaint(painter: borderPainter)),
+        const DesktopWindowResizeEdges(),
       ],
     );
   }

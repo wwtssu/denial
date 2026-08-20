@@ -55,7 +55,7 @@ use super::super::window_grab::{
 use super::super::wire::InputRect;
 #[cfg(feature = "flutter")]
 use super::super::wire::{
-    InputLayoutSnapshot, InputWindowRegion, WindowPlacementChange, WindowPlacementPhase,
+    InputLayoutSnapshot, InputRect, InputWindowRegion, WindowPlacementChange, WindowPlacementPhase,
 };
 #[cfg(feature = "flutter")]
 use super::FlutterPointerPress;
@@ -378,22 +378,30 @@ impl PointerConstraintEscape {
 impl ClientInputRoute {
     fn focus_at(&self, position: Point<f64, Logical>) -> (WlSurface, Point<f64, Logical>) {
         let scene_position = position - self.scene_origin;
-        let (local_x, local_y) =
-            self.region
-                .rect
-                .map_to(self.region.source_rect, scene_position.x, scene_position.y);
+        // Map through the client content area, not the full frame: the
+        // frame's top strip is the shell title bar, which has no client
+        // buffer. Anchor the content rect at the frame's bottom-left — the
+        // decoration sits on top, so the content's bottom edge coincides
+        // with the frame's. Its size is the client content texture, making
+        // content -> texture a 1:1 mapping.
+        let source = self.region.source_rect;
+        let content = InputRect {
+            x: self.region.rect.x + (self.region.rect.width - source.width) / 2.0,
+            y: self.region.rect.y + self.region.rect.height - source.height,
+            width: source.width,
+            height: source.height,
+        };
+        let (local_x, local_y) = content.map_to(source, scene_position.x, scene_position.y);
         let local_point = Point::from((local_x, local_y));
         let (surface, local_origin) =
             under_from_surface_tree(&self.surface, local_point, (0, 0), WindowSurfaceType::ALL)
                 .unwrap_or_else(|| (self.surface.clone(), (0, 0).into()));
-        let scale_x = self.region.rect.width / self.region.source_rect.width;
-        let scale_y = self.region.rect.height / self.region.source_rect.height;
+        let scale_x = content.width / source.width;
+        let scale_y = content.height / source.height;
         let global_origin = self.scene_origin
             + Point::from((
-                self.region.rect.x
-                    + (f64::from(local_origin.x) - self.region.source_rect.x) * scale_x,
-                self.region.rect.y
-                    + (f64::from(local_origin.y) - self.region.source_rect.y) * scale_y,
+                content.x + (f64::from(local_origin.x) - source.x) * scale_x,
+                content.y + (f64::from(local_origin.y) - source.y) * scale_y,
             ));
         (surface, global_origin)
     }
@@ -508,13 +516,218 @@ fn resize_edge_for_geometry(
     pointer: Point<f64, Logical>,
     geometry: Rectangle<i32, Logical>,
 ) -> xdg_toplevel::ResizeEdge {
-    let midpoint_x = f64::from(geometry.loc.x) + f64::from(geometry.size.w) / 2.0;
-    let midpoint_y = f64::from(geometry.loc.y) + f64::from(geometry.size.h) / 2.0;
-    match (pointer.x < midpoint_x, pointer.y < midpoint_y) {
-        (true, true) => xdg_toplevel::ResizeEdge::TopLeft,
-        (true, false) => xdg_toplevel::ResizeEdge::BottomLeft,
-        (false, true) => xdg_toplevel::ResizeEdge::TopRight,
-        (false, false) => xdg_toplevel::ResizeEdge::BottomRight,
+    use xdg_toplevel::ResizeEdge as Edge;
+    const EDGE_INSET: f64 = 12.0;
+
+    let left = f64::from(geometry.loc.x);
+    let top = f64::from(geometry.loc.y);
+    let right = left + f64::from(geometry.size.w);
+    let bottom = top + f64::from(geometry.size.h);
+    let x = pointer.x;
+    let y = pointer.y;
+
+    let near_left = x - left <= EDGE_INSET;
+    let near_right = right - x <= EDGE_INSET;
+    let near_top = y - top <= EDGE_INSET;
+    let near_bottom = bottom - y <= EDGE_INSET;
+
+    // Corners win over edges inside the inset band.
+    match (near_left, near_right, near_top, near_bottom) {
+        (true, false, true, false) => return Edge::TopLeft,
+        (true, false, false, true) => return Edge::BottomLeft,
+        (false, true, true, false) => return Edge::TopRight,
+        (false, true, false, true) => return Edge::BottomRight,
+        (true, _, _, _) => return Edge::Left,
+        (_, true, _, _) => return Edge::Right,
+        (_, _, true, _) => return Edge::Top,
+        (_, _, _, true) => return Edge::Bottom,
+        _ => {}
+    }
+
+    // Pointer inside the window but away from the border: resize the nearest
+    // edge. The midpoint of the top border therefore yields Top (height only)
+    // instead of a corner that would also change the width.
+    let dist_left = (x - left).abs();
+    let dist_right = (right - x).abs();
+    let dist_top = (y - top).abs();
+    let dist_bottom = (bottom - y).abs();
+    let min = dist_left.min(dist_right).min(dist_top).min(dist_bottom);
+    if min == dist_top {
+        Edge::Top
+    } else if min == dist_bottom {
+        Edge::Bottom
+    } else if min == dist_left {
+        Edge::Left
+    } else {
+        Edge::Right
+    }
+}
+
+/// Border-band edge detection for unmodified left-press resize.
+///
+/// Unlike [`resize_edge_for_geometry`] (which falls back to the nearest edge
+/// anywhere inside the window for SUPER+RMB), this returns `None` unless the
+/// pointer is inside the edge inset band. A plain LMB press on the border
+/// therefore resizes only when the cursor is actually on an edge — the
+/// desktop-standard interaction, no modifier required. The window's top
+/// border is the title bar's top edge, so that strip participates too.
+#[cfg(feature = "flutter")]
+fn resize_edge_at_border(
+    pointer: Point<f64, Logical>,
+    geometry: Rectangle<i32, Logical>,
+) -> Option<xdg_toplevel::ResizeEdge> {
+    use xdg_toplevel::ResizeEdge as Edge;
+    const EDGE_INSET: f64 = 12.0;
+
+    let left = f64::from(geometry.loc.x);
+    let top = f64::from(geometry.loc.y);
+    let right = left + f64::from(geometry.size.w);
+    let bottom = top + f64::from(geometry.size.h);
+    let x = pointer.x;
+    let y = pointer.y;
+
+    let near_left = x - left <= EDGE_INSET;
+    let near_right = right - x <= EDGE_INSET;
+    let near_top = y - top <= EDGE_INSET;
+    let near_bottom = bottom - y <= EDGE_INSET;
+
+    match (near_left, near_right, near_top, near_bottom) {
+        (true, false, true, false) => Some(Edge::TopLeft),
+        (true, false, false, true) => Some(Edge::BottomLeft),
+        (false, true, true, false) => Some(Edge::TopRight),
+        (false, true, false, true) => Some(Edge::BottomRight),
+        (true, _, _, _) => Some(Edge::Left),
+        (_, true, _, _) => Some(Edge::Right),
+        (_, _, true, _) => Some(Edge::Top),
+        (_, _, _, true) => Some(Edge::Bottom),
+        _ => None,
+    }
+}
+
+/// Starts a resize grab for a plain LMB press inside a window's border band.
+///
+/// This is the desktop-standard interaction: no modifier, just press on the
+/// edge and drag. Geometry is the window's full frame — the same rect the
+/// publisher uses for both the window input region and the shellRegions
+/// subtraction — so the frame includes the title bar and its top border band
+/// doubles as the title bar's top edge. Decoration hits (target Flutter with
+/// no local region) resolve the owning window through the layout and rebuild
+/// its route; local-window hits take the local grab path.
+#[cfg(feature = "flutter")]
+fn begin_border_resize_grab(
+    state: &mut RuntimeState,
+    target: &InputTarget,
+    local_window_region: &Option<InputWindowRegion>,
+    button: u32,
+    serial: Serial,
+) -> bool {
+    let frontend = state.wayland.as_ref().expect("missing Wayland frontend");
+    let layout = frontend.input_layout.as_ref();
+    let scene_position = frontend.pointer_location - frontend.atlas_origin;
+
+    // Resolve the owning window region: content hits carry a route, local
+    // window hits carry the region, decoration hits resolve through the
+    // layout (a covered client can never be reached through a higher
+    // window's title bar, mirroring input_route).
+    let (route, region) = match target {
+        InputTarget::Client(route) => (Some(route.clone()), route.region),
+        InputTarget::Flutter => {
+            if let Some(region) = local_window_region {
+                (None, *region)
+            } else {
+                let Some((layout_index, (region, _))) = layout
+                    .expect("missing input layout")
+                    .windows
+                    .iter()
+                    .zip(&layout.expect("missing input layout").window_decorations)
+                    .enumerate()
+                    .find(|(_, (region, decoration))| {
+                        region_accepts_input(region, scene_position)
+                            || (decoration.width > 0.0
+                                && decoration.height > 0.0
+                                && decoration.contains(scene_position.x, scene_position.y)
+                                && region.visible()
+                                && region.hit_test_enabled())
+                    })
+                else {
+                    return false;
+                };
+                let Some(surface) = frontend.surfaces_by_id.get(&region.surface_id).cloned()
+                else {
+                    return false;
+                };
+                let Some(window) = frontend.window_for_id(region.window_id) else {
+                    return false;
+                };
+                let Some(root_surface) = frontend.window_root_surface(&window) else {
+                    return false;
+                };
+                if frontend.owning_toplevel_surface(&surface).as_ref() != Some(&root_surface) {
+                    return false;
+                }
+                (
+                    Some(ClientInputRoute {
+                        window: Some(window),
+                        surface,
+                        region: *region,
+                        layout_index,
+                        scene_origin: frontend.atlas_origin,
+                    }),
+                    *region,
+                )
+            }
+        }
+    };
+
+    if region.geometry_locked() {
+        return false;
+    }
+    let global_geometry = Rectangle::new(
+        Point::from((
+            (region.rect.x + frontend.atlas_origin.x).round() as i32,
+            (region.rect.y + frontend.atlas_origin.y).round() as i32,
+        )),
+        (
+            region.rect.width.round() as i32,
+            region.rect.height.round() as i32,
+        )
+            .into(),
+    );
+    let Some(edge) = resize_edge_at_border(frontend.pointer_location, global_geometry) else {
+        info!(
+            x = frontend.pointer_location.x,
+            y = frontend.pointer_location.y,
+            rect = ?global_geometry,
+            "border press outside the edge band — no resize"
+        );
+        return false;
+    };
+    info!(
+        x = frontend.pointer_location.x,
+        y = frontend.pointer_location.y,
+        rect = ?global_geometry,
+        edge = ?edge,
+        has_route = route.is_some(),
+        "border press starts resize grab"
+    );
+
+    match route {
+        Some(route) => begin_super_pointer_grab(
+            state,
+            &route,
+            SuperPointerAction::Resize,
+            button,
+            serial,
+            Some(edge),
+        ),
+        None => begin_local_super_pointer_grab(
+            state,
+            region,
+            SuperPointerAction::Resize,
+            button,
+            serial,
+            Some(edge),
+        ),
     }
 }
 
@@ -699,49 +912,41 @@ impl WaylandFrontend {
             return None;
         }
 
-        // Local Flutter windows participate in the same front-to-back window
-        // region list as client surfaces. They intentionally have no Smithay
-        // input target: once the topmost hit is local, stop traversal so a
-        // covered Wayland client cannot receive the event through it.
-        // Shell-drawn decoration (server-side title bar) belongs to its
-        // window and is depth-tested in window order, but routes to the shell
-        // scene: the client has no buffer under the title bar. A covered
-        // client must not receive the event through it.
-        if layout
+        // Windows are depth-tested front-to-back as single units: a window's
+        // shell-drawn decoration (title bar) and its content share the same
+        // z unit. The first hit decides routing - decoration and local
+        // Flutter windows route to the shell scene (they have no Smithay
+        // input target), content continues to the client route below. A
+        // covered client can never receive the event through a higher
+        // window's title bar.
+        if let Some((hit, decoration)) = layout
             .windows
             .iter()
             .zip(&layout.window_decorations)
-            .any(|(region, decoration)| {
-                decoration.width > 0.0
-                    && decoration.height > 0.0
-                    && decoration.contains(scene_position.x, scene_position.y)
-                    && region.visible()
-                    && region.hit_test_enabled()
+            .find(|(region, decoration)| {
+                region_accepts_input(region, scene_position)
+                    || (decoration.width > 0.0
+                        && decoration.height > 0.0
+                        && decoration.contains(scene_position.x, scene_position.y)
+                        && region.visible()
+                        && region.hit_test_enabled())
             })
         {
-            return None;
-        }
-
-        // Local Flutter windows participate in the same front-to-back window
-        // region list as client surfaces. They intentionally have no Smithay
-        // input target: once the topmost hit is local, stop traversal so a
-        // covered Wayland client cannot receive the event through it.
-        if let Some(hit) = layout
-            .windows
-            .iter()
-            .find(|region| region_accepts_input(region, scene_position))
-        {
             let is_local = self.local_windows.contains(hit.window_id);
+            let is_decoration = decoration.width > 0.0
+                && decoration.height > 0.0
+                && decoration.contains(scene_position.x, scene_position.y);
             info!(
                 window_id = hit.window_id,
                 object_id = hit.object_id,
                 surface_id = hit.surface_id,
                 z = hit.z,
                 is_local,
+                is_decoration,
                 rect = ?hit.rect,
                 "input hit test at {scene_position:?}"
             );
-            if is_local {
+            if is_local || is_decoration {
                 self.client_input_route_cache = None;
                 return None;
             }
@@ -2029,19 +2234,29 @@ fn process_flutter_input_event(
             // for compositor pointer chords instead of Smithay's modifiers.
             let logo = state.native_escape_shortcut.super_pressed();
             let super_action = super_pointer_action(logo, button_code);
+            // Plain LMB press on the window border resizes that edge with no
+            // modifier at all — the desktop-standard interaction. SUPER+RMB
+            // stays as the anywhere-resize chord. The border band is the same
+            // inset used by the SUPER+RMB path.
+            let border_resize = !logo
+                && !pointer_grabbed
+                && button.state() == ButtonState::Pressed
+                && button_code == BTN_LEFT;
             let began_super_grab = if !pointer_grabbed
                 && button.state() == ButtonState::Pressed
                 && let Some(action) = super_action
             {
                 match (&target, local_window_region) {
-                    (InputTarget::Client(route), _) => {
-                        begin_super_pointer_grab(state, route, action, button_code, serial)
-                    }
-                    (InputTarget::Flutter, Some(region)) => {
-                        begin_local_super_pointer_grab(state, region, action, button_code, serial)
-                    }
+                    (InputTarget::Client(route), _) => begin_super_pointer_grab(
+                        state, route, action, button_code, serial, None,
+                    ),
+                    (InputTarget::Flutter, Some(region)) => begin_local_super_pointer_grab(
+                        state, region, action, button_code, serial, None,
+                    ),
                     _ => false,
                 }
+            } else if border_resize {
+                begin_border_resize_grab(state, &target, &local_window_region, button_code, serial)
             } else {
                 false
             };
@@ -2890,6 +3105,7 @@ fn begin_local_super_pointer_grab(
     action: SuperPointerAction,
     button: u32,
     serial: Serial,
+    edge_override: Option<xdg_toplevel::ResizeEdge>,
 ) -> bool {
     if region.geometry_locked() {
         return false;
@@ -2931,7 +3147,8 @@ fn begin_local_super_pointer_grab(
                 )
                     .into(),
             );
-            let edge = resize_edge_for_geometry(position, global_geometry);
+            let edge = edge_override
+                .unwrap_or_else(|| resize_edge_for_geometry(position, global_geometry));
             let edges = ResizeEdges::from_xdg(edge).expect("corner is a valid resize edge");
             LocalFlutterWindowGrab::new_resize(start_data, region.window_id, geometry, edges)
         }
@@ -2954,6 +3171,7 @@ fn begin_super_pointer_grab(
     action: SuperPointerAction,
     button: u32,
     serial: Serial,
+    edge_override: Option<xdg_toplevel::ResizeEdge>,
 ) -> bool {
     let Some(window) = route.window.clone() else {
         return false;
@@ -2973,6 +3191,12 @@ fn begin_super_pointer_grab(
             frontend.window_geometry_target(&window),
         )
     };
+    info!(
+        ?initial_location,
+        ?geometry,
+        pointer = ?position,
+        "shell grab start (space element_location vs geometry target)"
+    );
     let start_data = GrabStartData {
         focus: Some(route.focus_at(position)),
         button,
@@ -3004,7 +3228,8 @@ fn begin_super_pointer_grab(
             );
         }
         SuperPointerAction::Resize => {
-            let edge = resize_edge_for_geometry(position, geometry);
+            let edge =
+                edge_override.unwrap_or_else(|| resize_edge_for_geometry(position, geometry));
             let edges = ResizeEdges::from_xdg(edge).expect("corner is a valid resize edge");
             super::queue_window_placement(
                 state,

@@ -56,6 +56,12 @@ impl MouseCursorPlugin {
             return error("Bad Arguments", "Mouse cursor kind is not supported.");
         };
 
+        tracing::info!(
+            kind = arguments.kind,
+            shape,
+            device = arguments.device,
+            "flutter cursor request"
+        );
         self.pending_shape = Some(shape);
         success()
     }

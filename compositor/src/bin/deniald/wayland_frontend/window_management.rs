@@ -369,6 +369,7 @@ pub(in super::super) fn apply_window_commands(
             WindowCommand::Configure {
                 geometry, exact, ..
             } => {
+                tracing::info!(?geometry, exact, window_id, "flutter configure window");
                 let requested_size = Size::<i32, Logical>::from((
                     geometry.width.round() as i32,
                     geometry.height.round() as i32,

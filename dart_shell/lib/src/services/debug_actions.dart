@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart' show Rect;
+import 'package:flutter/widgets.dart' show Offset, Rect;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../desktop/desktop_workspace.dart';
@@ -8,7 +8,9 @@ import '../input/input_layout.dart';
 import '../launcher/controllers/home_grid_controller.dart';
 import '../launcher/models/desktop_app.dart';
 import '../launcher/models/home_grid_item.dart';
+import '../models/denial_window.dart';
 import '../state/clipboard_tray.dart';
+import '../state/shell_controller.dart';
 
 /// Invocation context handed to [DebugActionTarget.invoke].
 class DebugActionContext {
@@ -77,9 +79,30 @@ final debugActionsProvider = Provider<DebugActionRegistry>((ref) {
     ..register(const AppsTarget())
     ..register(const ShellActionTarget())
     ..register(const WatchTarget())
-    ..register(const InputLayoutTarget());
+    ..register(const InputLayoutTarget())
+    ..register(const WindowTarget());
   return registry;
 });
+
+/// Latest platform pointer position, fed by the compositor's cursor stream.
+final cursorPositionProvider =
+    NotifierProvider<CursorPositionController, Offset?>(
+      CursorPositionController.new,
+    );
+
+class CursorPositionController extends Notifier<Offset?> {
+  StreamSubscription<Offset>? _subscription;
+
+  @override
+  Offset? build() {
+    _subscription = ref
+        .read(denialBridgeProvider)
+        .cursorPositions
+        .listen((position) => state = position);
+    ref.onDispose(() => _subscription?.cancel());
+    return null;
+  }
+}
 
 /// Widget-lifecycle registration helper.
 ///
@@ -341,7 +364,7 @@ class InputLayoutTarget implements DebugActionTarget {
   String get key => 'input';
 
   @override
-  Set<String> get actions => const {'layout'};
+  Set<String> get actions => const {'layout', 'cursor'};
 
   @override
   Future<Map<String, Object?>> invoke(
@@ -349,6 +372,17 @@ class InputLayoutTarget implements DebugActionTarget {
     String action,
     Map<String, Object?> args,
   ) async {
+    if (action == 'cursor') {
+      final position = context.ref.read(cursorPositionProvider);
+      if (position == null) {
+        return <String, Object?>{'known': false};
+      }
+      return <String, Object?>{
+        'known': true,
+        'x': position.dx.round(),
+        'y': position.dy.round(),
+      };
+    }
     if (action != 'layout') {
       throw DebugActionException('unknown input action: $action');
     }
@@ -379,6 +413,92 @@ class InputLayoutTarget implements DebugActionTarget {
           },
       ],
     };
+  }
+}
+
+class WindowTarget implements DebugActionTarget {
+  const WindowTarget();
+
+  @override
+  String get key => 'window';
+
+  @override
+  Set<String> get actions => const {'center', 'geometry', 'close'};
+
+  @override
+  Future<Map<String, Object?>> invoke(
+    DebugActionContext context,
+    String action,
+    Map<String, Object?> args,
+  ) async {
+    final windowId = args['windowId'] is int ? args['windowId'] as int : null;
+    final window = _selectWindow(context, windowId);
+    if (window == null) {
+      throw DebugActionException('no resizable user window available');
+    }
+    final workspace = context.ref.read(desktopWorkspaceProvider);
+    final placement = workspace.placements[window.objectId];
+    if (placement == null) {
+      throw DebugActionException('window has no placement');
+    }
+    switch (action) {
+      case 'center':
+        final viewSize = workspace.viewSize;
+        if (viewSize.isEmpty) {
+          throw DebugActionException('workspace has no view size');
+        }
+        final frame = placement.frame;
+        final target = Rect.fromLTWH(
+          (viewSize.width - frame.width) / 2,
+          (viewSize.height - frame.height) / 2,
+          frame.width,
+          frame.height,
+        );
+        final delta = target.topLeft - frame.topLeft;
+        context
+            .ref
+            .read(desktopWorkspaceProvider.notifier)
+            .moveBy(window.objectId, delta);
+        final after =
+            context
+                .ref
+                .read(desktopWorkspaceProvider)
+                .placements[window.objectId]
+                ?.frame;
+        return <String, Object?>{
+          'ok': true,
+          'windowId': window.objectId,
+          'delta': <String, Object?>{
+            'x': delta.dx.round(),
+            'y': delta.dy.round(),
+          },
+          'rect': _rectJson(after ?? frame),
+        };
+      case 'geometry':
+        return <String, Object?>{
+          'windowId': window.objectId,
+          'rect': _rectJson(placement.frame),
+        };
+      case 'close':
+        context.ref.read(denialBridgeProvider).closeWindow(window);
+        return <String, Object?>{'ok': true, 'windowId': window.objectId};
+      default:
+        throw DebugActionException('unknown window action: $action');
+    }
+  }
+
+  DenialWindow? _selectWindow(DebugActionContext context, int? windowId) {
+    final shell = context.ref.read(shellControllerProvider);
+    for (final window in shell.openAppWindows) {
+      if (windowId != null) {
+        if (window.objectId == windowId) {
+          return window;
+        }
+      } else if (window.isUserApp) {
+        return window;
+      }
+    }
+    return null;
   }
 }
 
