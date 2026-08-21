@@ -1038,6 +1038,65 @@ impl WaylandFrontend {
             return self.client_input_route_cache.as_ref();
         }
 
+        // X11 fallback: the Flutter input layout lags new X11 windows by up
+        // to seconds (the layout is a Rust -> Flutter -> Rust round trip),
+        // but X11 popups must be clickable the instant they map — a menu
+        // whose events are routed to the parent window is interpreted as an
+        // outside click and closes immediately. Hit the compositor-owned
+        // Space directly for X11 windows so they are interactive from the
+        // first frame. Wayland windows stay layout-only: their decoration
+        // semantics live entirely in the Flutter scene.
+        let x11_fallback = self.space.elements().enumerate().rev().find_map(
+            |(z, window)| {
+                let x11 = window.x11_surface()?;
+                let geometry = self.window_geometry_target(window);
+                if geometry.size.w <= 0 || geometry.size.h <= 0 {
+                    return None;
+                }
+                let rect = InputRect {
+                    x: geometry.loc.x as f64,
+                    y: geometry.loc.y as f64,
+                    width: geometry.size.w as f64,
+                    height: geometry.size.h as f64,
+                };
+                if !rect.contains(scene_position.x, scene_position.y) {
+                    return None;
+                }
+                let surface = self.window_root_surface(window)?;
+                let surface_id = self.surface_id(&surface)?;
+                let _ = x11;
+                Some((
+                    z,
+                    ClientInputRoute {
+                        window: Some(window.clone()),
+                        surface,
+                        region: InputWindowRegion {
+                            object_id: surface_id,
+                            surface_id,
+                            window_id: surface_id,
+                            rect,
+                            source_rect: rect,
+                            z: z as i32,
+                            flags: crate::wire::INPUT_WINDOW_VISIBLE,
+                        },
+                        layout_index: 0,
+                        scene_origin: self.atlas_origin,
+                    },
+                ))
+            },
+        );
+        if let Some((_, route)) = x11_fallback {
+            info!(
+                window_id = route.region.window_id,
+                surface_id = route.region.surface_id,
+                z = route.region.z,
+                rect = ?route.region.rect,
+                "created X11 fallback input route at {scene_position:?}"
+            );
+            self.client_input_route_cache = Some(route);
+            return self.client_input_route_cache.as_ref();
+        }
+
         None
     }
 
