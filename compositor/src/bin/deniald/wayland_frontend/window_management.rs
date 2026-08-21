@@ -88,9 +88,14 @@ pub(super) fn shell_draws_server_frame(window: &Window) -> bool {
 
 #[cfg(feature = "flutter")]
 pub(super) fn shell_draws_x11_server_frame(x11: &X11Surface) -> bool {
-    // Denial owns the frame for managed X11 toplevels regardless of client
-    // decoration hints. Protocol-level popups remain unframed.
+    // Denial owns the frame for managed X11 toplevels unless the client
+    // draws its own decorations (CSD). X11 clients declare that through
+    // _MOTIF_WM_HINTS: a decorations bitmask of 0 means "I render my own
+    // title bar" (Steam, GTK apps on CSD desktops). Overlaying Denial's
+    // frame on those would double the title bar, so leave them alone.
+    // Protocol-level popups remain unframed.
     !x11.is_override_redirect()
+        && !x11.is_decorated()
         && !matches!(
             x11.window_type(),
             Some(
