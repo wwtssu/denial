@@ -383,6 +383,7 @@ fn map_x11_window(state: &mut RuntimeState, surface: X11Surface, override_redire
         override_redirect,
         title = surface.title(),
         class = surface.class(),
+        geometry = ?surface.last_configure(),
         "mapped X11 window"
     );
 }
@@ -391,6 +392,14 @@ fn unmap_x11_window(state: &mut RuntimeState, surface: &X11Surface) {
     let Some(window) = window_for_x11(state, surface) else {
         return;
     };
+    info!(
+        window = surface.window_id(),
+        override_redirect = surface.is_override_redirect(),
+        title = surface.title(),
+        class = surface.class(),
+        geometry = ?surface.last_configure(),
+        "unmapped X11 window"
+    );
     let keyboard = state
         .wayland
         .as_ref()
@@ -643,12 +652,22 @@ impl XwmHandler for RuntimeState {
         &mut self,
         _xwm: XwmId,
         window: X11Surface,
-        _x: Option<i32>,
-        _y: Option<i32>,
+        x: Option<i32>,
+        y: Option<i32>,
         width: Option<u32>,
         height: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
+        if window.is_override_redirect() {
+            info!(
+                window = window.window_id(),
+                x = ?x,
+                y = ?y,
+                width = ?width,
+                height = ?height,
+                "X11 override-redirect configure request"
+            );
+        }
         let element = window_for_x11(self, &window);
         #[cfg(feature = "flutter")]
         let shell_geometry_locked = element.as_ref().is_some_and(|element| {
@@ -739,7 +758,16 @@ impl XwmHandler for RuntimeState {
         self.scene_sync.mark_dirty();
     }
 
-    fn property_notify(&mut self, _xwm: XwmId, _window: X11Surface, _property: WmWindowProperty) {
+    fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
+        if window.is_override_redirect() {
+            info!(
+                window = window.window_id(),
+                ?property,
+                title = window.title(),
+                class = window.class(),
+                "X11 override-redirect property notify"
+            );
+        }
         self.scene_sync.mark_dirty();
     }
 
@@ -987,6 +1015,10 @@ impl XwmHandler for RuntimeState {
         _timestamp: u32,
         _currently_active_window: Option<X11Surface>,
     ) {
+        info!(
+            window = window.window_id(),
+            "X11 active-window request"
+        );
         if !self.client_activation_permitted() {
             debug!(
                 window = window.window_id(),

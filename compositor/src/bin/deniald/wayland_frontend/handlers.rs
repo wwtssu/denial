@@ -936,6 +936,16 @@ impl SeatHandler for RuntimeState {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
+        match focused {
+            Some(KeyboardFocusTarget::X11(surface)) => info!(
+                window = surface.window_id(),
+                "keyboard focus changed to X11 window"
+            ),
+            Some(KeyboardFocusTarget::Wayland(_)) => {
+                info!("keyboard focus changed to Wayland surface")
+            }
+            None => info!("keyboard focus cleared"),
+        }
         #[cfg(feature = "flutter")]
         if focused.is_some() {
             self.wayland
