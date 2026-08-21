@@ -95,8 +95,10 @@
 - [ ] **S1 — Steam（CEF）下拉菜单弹出即关（~37ms）**
   - 现象：点击 Steam 左上角菜单按钮，菜单"弹了马上没了"（用户感知"像双击"）。
   - 证据链（XWM 日志 + X 层工具全实证）：点击单发无重复（xev）→ 菜单窗口（OR, POPUP_MENU, title="", class=steam）map → Denial 合成（用户可见影子）→ Steam 发 `_NET_ACTIVE_WINDOW` 激活请求 → Denial 执行（键盘焦点切到菜单窗口）→ **~37ms 后 Steam 主动 unmap**。手动 xdotool windowmap + windowfocus 菜单窗口则保持显示（Denial 侧合成/激活/焦点/输入路由全部正常）；XGrabPointer 可用性测试 status=0；X 焦点全程未变（CEF 用隐藏窗口管焦点）。
-  - 根因判断：Steam/CEF 菜单打开流程的 grab/显示确认在 Xwayland 下失败（X server 内部，合成器无协议接口）。同类问题：cosmic-comp #2349（Java popup 同样立即消失）、Hyprland 需 stayfocused 窗口规则缓解。
-  - 建议：Xwayland 23.2.6 → 24.x 实测（发行版外升级）；Steam 官方 Wayland 适配；无 Denial 侧修复路径。
+  - 根因判断：Steam/CEF 菜单打开流程的 grab/显示确认在 Xwayland 下失败（X server 内部，合成器无协议接口）。同类问题：cosmic-comp #2349（Java popup 同样立即消失）、Hyprland 需 stayfocused 窗口规则缓解、**Valve 官方 issue #9273（2023 至今 open，123 👍，X11 下也复现——Valve 已知 bug 家族）**。
+  - **有效 workaround（2026-08-21 实测）**：Steam 设置 → Interface → 开启 **"Enable context menu focus compatibility mode"**（Valve 为此类问题加的官方兼容开关）→ 菜单存活 37ms → **188ms**（肉眼可看清菜单内容，但仍会自动关闭、无法交互）。
+  - 建议：Xwayland 23.2.6 → 24.x 实测（发行版外升级）；Steam 官方 Wayland 适配。
+  - **已试无效（2026-08-21）**：① Ctrl/Shift 按住点击（Reddit workaround）→ 无效；② Denial 侧 XSetInputFocus 到菜单窗口（active_window_request 时经独立 x11rb 连接设 X 焦点，EWMH 规范行为）→ focustrack 实测 X 焦点仍被 Steam 在 2ms 内抢回（时序竞争），菜单 184ms 照旧关闭，已回退（git 工作树干净）。
 
 - [ ] **S2 — Steam 主窗口登录后不主动 map（IsUnMapped）**
   - 现象：Steam 启动后主窗口在窗口树存在但 Map State: IsUnMapped，屏幕不显示；`xdotool windowmap` 强制后正常显示。
