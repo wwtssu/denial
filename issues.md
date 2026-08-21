@@ -83,10 +83,33 @@
   - 问题：opacity=0 的 X11 窗口场景不绘制但 expects_sample=true → 客户端 buffer 被钉住直至恢复可见。输入侧 opacity=0 保留 region 是正确惯例，仅采样侧浪费。
   - 建议：opacity==0 保留输入 region 但剔除 visibleSurfaceIds（或 Rust 侧 expects_sample=false）。
 
-- [ ] **M8 — X11 无装饰协商：自绘装饰客户端被强制 SSD**
-  - 位置：`window_management.rs:89-106`（`shell_draws_x11_server_frame` 不查 `_MOTIF_WM_HINTS`）、`wayland_frontend.rs:3217-3233`、`handlers.rs:1691-1702`（Wayland neutral 一律 SSD）
+- [x] **M8 — X11 无装饰协商：自绘装饰客户端被强制 SSD**（✅ 已修 4ce5a87）
+  - 位置：`compositor/src/bin/deniald/wayland_frontend/window_management.rs`（`shell_draws_x11_server_frame`）
   - 问题：自绘装饰的 X11 客户端（Firefox/X11、部分 Java/Electron）被强制 SSD → 绘制双标题栏 + 输入侧顶部 37px 划给 shell → 客户端自己的控件不可点击。
-  - 建议：X11 读 Motif/`_NET_WM` 装饰提示决定 flag；自绘客户端考虑"只画边框不画标题栏"降级模式。
+  - 修复：读取 `_MOTIF_WM_HINTS` decorations 位掩码，客户端声明自绘（bitmask=0）时 Denial 不再叠加 SSD（Steam 双标题栏实测消除）。
+
+---
+
+## 🔬 Steam/Xwayland 兼容（2026-08-21 诊断闭环）
+
+- [ ] **S1 — Steam（CEF）下拉菜单弹出即关（~37ms）**
+  - 现象：点击 Steam 左上角菜单按钮，菜单"弹了马上没了"（用户感知"像双击"）。
+  - 证据链（XWM 日志 + X 层工具全实证）：点击单发无重复（xev）→ 菜单窗口（OR, POPUP_MENU, title="", class=steam）map → Denial 合成（用户可见影子）→ Steam 发 `_NET_ACTIVE_WINDOW` 激活请求 → Denial 执行（键盘焦点切到菜单窗口）→ **~37ms 后 Steam 主动 unmap**。手动 xdotool windowmap + windowfocus 菜单窗口则保持显示（Denial 侧合成/激活/焦点/输入路由全部正常）；XGrabPointer 可用性测试 status=0；X 焦点全程未变（CEF 用隐藏窗口管焦点）。
+  - 根因判断：Steam/CEF 菜单打开流程的 grab/显示确认在 Xwayland 下失败（X server 内部，合成器无协议接口）。同类问题：cosmic-comp #2349（Java popup 同样立即消失）、Hyprland 需 stayfocused 窗口规则缓解。
+  - 建议：Xwayland 23.2.6 → 24.x 实测（发行版外升级）；Steam 官方 Wayland 适配；无 Denial 侧修复路径。
+
+- [ ] **S2 — Steam 主窗口登录后不主动 map（IsUnMapped）**
+  - 现象：Steam 启动后主窗口在窗口树存在但 Map State: IsUnMapped，屏幕不显示；`xdotool windowmap` 强制后正常显示。
+  - 判断：Steam 在 Xwayland 下未发/未完成 map 流程；Denial 收到 map 请求时正常放行（强制 map 后一切正常）。
+  - 建议：观察是否随 Xwayland 升级消失；不阻塞。
+
+- [ ] **S3 — 会话未导出 DBUS_SESSION_BUS_ADDRESS**
+  - 现象：`~/.local/share/Steam/logs/cef_log.txt` 56 个 "Failed to connect to the bus"；`/run/user/1000/bus` socket 存在但会话环境未导出。
+  - 建议：deniald 会话启动时导出 `DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus`（手动导出实测未修复 S1，但属环境正确性）。
+
+- [ ] **S4 — Xwayland 版本 23.2.6（Ubuntu 24.04 仓库）**
+  - 背景：cosmic-comp #2349 类 popup/grab 问题在更新 Xwayland 版本有修复记录；Ubuntu 仓库版本较旧。
+  - 建议：如需验证 S1 是否随 Xwayland 修复，评估 PPA/源码升级路径（低优先级）。
 
 - [ ] **M10 — Flutter 手势层丢失与 Up 同帧的最后一个 motion（引擎合并）**
   - 位置：Flutter 引擎 pointer event coalescing（每帧只保留最后一个事件）；影响所有 Flutter 手势（标题栏 move 等）
