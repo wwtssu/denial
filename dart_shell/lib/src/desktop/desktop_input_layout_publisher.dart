@@ -118,15 +118,16 @@ class _DesktopInputLayoutPublisherState
       for (final popup in inputMethodPopups) {
         shellRegions = _subtractFromAll(shellRegions, popup.geometry!);
       }
+      // The shell owns everything outside every window's frame: the gaps
+      // between windows and the desktop. Server-side decoration (title bar)
+      // belongs to its window as a shell-owned input region, so the full
+      // frame is subtracted here.
       for (final placement in placements) {
-        final visualContentRect = placement.contentRect;
-        shellRegions = _subtractFromAll(shellRegions, visualContentRect);
         final window = windowsById[placement.objectId]!;
+        shellRegions = _subtractFromAll(shellRegions, placement.frame);
         for (final popup in window.popupRoots) {
-          shellRegions = _subtractFromAll(
-            shellRegions,
-            window.mapSurfaceRect(popup, visualContentRect),
-          );
+          final popupRect = window.mapSurfaceRect(popup, placement.contentRect);
+          shellRegions = _subtractFromAll(shellRegions, popupRect);
         }
       }
     }
@@ -191,16 +192,30 @@ class _DesktopInputLayoutPublisherState
       }
       final window = windowsById[placement.objectId]!;
       visibleSurfaceIds.addAll(window.visibleSurfaceIds);
-      final visualContentRect = placement.contentRect;
-      final sourceRect = window.contentCoordinateRect;
       final baseZ = placementOrder[placement.objectId]! * zStride;
+      // Server-side decoration: the shell-drawn title bar belongs to its
+      // window as a decoration region. It is depth-tested in window order
+      // but routes to the shell scene (the client has no buffer there).
+      // CSD windows have no top decoration, so the list stays empty.
+      final topDecoration = placement.contentRect.top - placement.frame.top;
+      final decorations = topDecoration > 0.0
+          ? <Rect>[
+              Rect.fromLTRB(
+                placement.frame.left,
+                placement.frame.top,
+                placement.frame.right,
+                placement.contentRect.top,
+              ),
+            ]
+          : const <Rect>[];
       final popupRoots = window.popupRoots.toList(growable: false).reversed;
       for (final popup in popupRoots) {
+        final popupRect = window.mapSurfaceRect(popup, placement.contentRect);
         inputWindows.add(
           InputWindowRegion(
             window: window,
             surfaceId: popup.surfaceId,
-            rect: window.mapSurfaceRect(popup, visualContentRect),
+            rect: popupRect,
             sourceRect: Rect.fromLTWH(
               0.0,
               0.0,
@@ -219,10 +234,16 @@ class _DesktopInputLayoutPublisherState
           // surface tree. The primary texture may be a full-window child and
           // is a rendering choice, not an input target.
           surfaceId: window.objectId,
-          rect: visualContentRect,
-          sourceRect: sourceRect,
+          // One geometry for the whole window: the frame (including the
+          // shell-drawn title bar) is the input region. shellRegions subtract
+          // the same frame, so the window owns its decoration and the border
+          // band around the content. The parallel decorations list only
+          // marks the title-bar strip for shell routing.
+          rect: placement.frame,
+          sourceRect: window.contentCoordinateRect,
           z: baseZ,
           geometryLocked: placement.fullscreen,
+          decorations: decorations,
         ),
       );
       _configureWindowGeometry(
@@ -249,6 +270,7 @@ class _DesktopInputLayoutPublisherState
     if (!ref.read(denialBridgeProvider).publishInputLayout(snapshot)) {
       return;
     }
+    ref.read(inputLayoutSnapshotProvider.notifier).publish(snapshot);
     _epoch = snapshot.epoch;
     _lastSnapshot = snapshot;
   }
@@ -289,19 +311,23 @@ class DesktopWindowConfigureTracker {
       height: contentRect.height.round().clamp(64, 16384),
     );
     final previous = _configured[objectId];
-    _configured[objectId] = geometry;
     if (previous == null) {
       // The native compositor owns initial placement and sizing. Seed from
       // the received geometry instead of echoing a newly discovered window.
+      _configured[objectId] = geometry;
       return null;
     }
     if (nativeDragActive) {
-      // Rust is the sole writer during a native move/resize grab.
+      // Rust is the sole writer during a native move/resize grab. Do NOT
+      // update _configured here: the value seen mid-grab is never sent, so
+      // remembering it would make the post-grab equality check skip the
+      // final configure (the "last seen == current" dedup bug).
       return null;
     }
     if (previous == geometry) {
       return null;
     }
+    _configured[objectId] = geometry;
     return Rect.fromLTWH(
       geometry.left.toDouble(),
       geometry.top.toDouble(),
@@ -325,6 +351,7 @@ List<Rect> _subtractFromAll(List<Rect> regions, Rect cut) {
   return result;
 }
 
+/// Splits [source] into the parts not covered by [cut].
 List<Rect> _subtractRect(Rect source, Rect cut) {
   final overlap = source.intersect(cut);
   if (overlap.isEmpty) {

@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 
 import '../theme/shell_theme.dart';
 import '../theme/tokens.dart';
+import 'desktop_window_resize_edges.dart';
 import 'desktop_window_render_telemetry.dart';
 import 'desktop_workspace.dart';
 
@@ -19,12 +20,16 @@ class DesktopWindowFrameLayers extends StatelessWidget {
     required this.windowId,
     required this.borderPainter,
     required this.child,
+    this.titleBar,
     super.key,
   });
 
   final int windowId;
   final CustomPainter borderPainter;
   final Widget child;
+
+  /// Optional shell-owned title bar drawn above the client region.
+  final Widget? titleBar;
 
   @override
   Widget build(BuildContext context) {
@@ -46,7 +51,16 @@ class DesktopWindowFrameLayers extends StatelessWidget {
           ),
         ),
         child,
+        if (titleBar case final Widget titleBar?)
+          Positioned(
+            top: DesktopMetrics.frameBorder,
+            left: DesktopMetrics.frameBorder,
+            right: DesktopMetrics.frameBorder,
+            height: DesktopMetrics.titleBarHeight,
+            child: titleBar,
+          ),
         IgnorePointer(child: CustomPaint(painter: borderPainter)),
+        const DesktopWindowResizeEdges(),
       ],
     );
   }

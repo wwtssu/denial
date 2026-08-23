@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/denial_window.dart';
 
@@ -197,6 +198,7 @@ class InputWindowRegion {
     this.visible = true,
     this.hitTest = true,
     this.geometryLocked = false,
+    this.decorations = const <Rect>[],
   });
 
   final DenialWindow window;
@@ -207,6 +209,11 @@ class InputWindowRegion {
   final bool visible;
   final bool hitTest;
   final bool geometryLocked;
+  /// Shell-drawn decoration (e.g. a server-side title bar) belonging to this
+  /// window, in scene coordinates. Decoration hits route to the shell scene
+  /// but are depth-tested as part of the window. Empty when the window has
+  /// no shell decoration (CSD).
+  final List<Rect> decorations;
 
   int get targetSurfaceId => surfaceId ?? window.surfaceId;
 
@@ -219,8 +226,21 @@ class InputWindowRegion {
         hitTest == other.hitTest &&
         geometryLocked == other.geometryLocked &&
         _sameWireRect(rect, other.rect) &&
-        _sameWireRect(sourceRect, other.sourceRect);
+        _sameWireRect(sourceRect, other.sourceRect) &&
+        _sameDecorations(decorations, other.decorations);
   }
+}
+
+bool _sameDecorations(List<Rect> left, List<Rect> right) {
+  if (left.length != right.length) {
+    return false;
+  }
+  for (var index = 0; index < left.length; index += 1) {
+    if (!_sameWireRect(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool _sameWireRect(Rect left, Rect right) {
@@ -229,6 +249,21 @@ bool _sameWireRect(Rect left, Rect right) {
       _sameWireCoordinate(left.width, right.width) &&
       _sameWireCoordinate(left.height, right.height);
 }
+
+/// Last successfully published input layout snapshot, for debug inspection.
+class InputLayoutSnapshotNotifier extends Notifier<InputLayoutSnapshot?> {
+  @override
+  InputLayoutSnapshot? build() => null;
+
+  void publish(InputLayoutSnapshot snapshot) {
+    state = snapshot;
+  }
+}
+
+final inputLayoutSnapshotProvider =
+    NotifierProvider<InputLayoutSnapshotNotifier, InputLayoutSnapshot?>(
+  InputLayoutSnapshotNotifier.new,
+);
 
 bool _sameWireCoordinate(double left, double right) {
   if (!left.isFinite || !right.isFinite) {
