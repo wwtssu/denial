@@ -208,7 +208,7 @@ is_compatible_legacy_config() {
 require_managed_config_or_absent() {
     local label="$1"
     local path="$2"
-    [[ -e "$path" || -L "$path" ]] || return
+    [[ -e "$path" || -L "$path" ]] || return 0
     grep -Fqx "# Installed by $SCRIPT_DIR/denial-pc" "$path" && return
     if is_compatible_legacy_config "$label" "$path"; then
         printf 'Adopting compatible legacy %s: %s\n' "$label" "$path"
