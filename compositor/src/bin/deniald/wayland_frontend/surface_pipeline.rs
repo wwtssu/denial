@@ -377,6 +377,14 @@ impl WaylandFrontend {
                 }
 
                 let location = saturating_point_add(context.location, view.offset);
+                info!(
+                    surface_id,
+                    location = ?location,
+                    view_offset = ?view.offset,
+                    view_dst = ?view.dst,
+                    view_src = ?view.src,
+                    "surface tree render view"
+                );
                 let transform = renderer_state.buffer_transform();
                 let scale = renderer_state.buffer_scale().max(1);
                 let source = renderer_state
@@ -764,6 +772,13 @@ impl WaylandFrontend {
                     saturating_point_add(content.loc, popup_location),
                     popup.geometry().loc,
                 );
+                info!(
+                    content_loc = ?content.loc,
+                    popup_location = ?popup_location,
+                    popup_geometry = ?popup.geometry(),
+                    popup_origin = ?popup_origin,
+                    "XDG popup render geometry"
+                );
                 self.append_surface_tree(
                     popup_surface,
                     popup_origin,
@@ -842,7 +857,13 @@ impl WaylandFrontend {
                         xwayland::x11_window_opacity(x11),
                     )
                 })
-                .unwrap_or((false, true, 1.0));
+                .unwrap_or_else(|| {
+                    // Wayland toplevels: honor xdg-decoration negotiation so
+                    // clients that asked for client-side decorations
+                    // (Chromium and friends) do not get a second shell frame.
+                    let server_side_decorated = shell_draws_server_frame(window);
+                    (!server_side_decorated, server_side_decorated, 1.0)
+                });
             if window_opacity < 1.0 {
                 for layer in &mut layers {
                     layer.opacity *= window_opacity;

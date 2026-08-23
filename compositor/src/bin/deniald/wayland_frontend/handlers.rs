@@ -947,6 +947,16 @@ impl SeatHandler for RuntimeState {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
+        match focused {
+            Some(KeyboardFocusTarget::X11(surface)) => info!(
+                window = surface.window_id(),
+                "keyboard focus changed to X11 window"
+            ),
+            Some(KeyboardFocusTarget::Wayland(_)) => {
+                info!("keyboard focus changed to Wayland surface")
+            }
+            None => info!("keyboard focus cleared"),
+        }
         #[cfg(feature = "flutter")]
         if focused.is_some() {
             self.wayland
@@ -1698,17 +1708,22 @@ impl XdgActivationHandler for RuntimeState {
     }
 }
 
-const fn shell_decoration_mode() -> XdgDecorationMode {
+fn shell_decoration_mode(requested: Option<XdgDecorationMode>) -> XdgDecorationMode {
     // Flutter owns the visible frame, title bar, shadows, and window actions.
-    // Advertising client-side decorations would render a second frame inside
-    // that shell-owned frame, so Denial deliberately keeps one policy for
-    // defaults as well as explicit client requests.
-    XdgDecorationMode::ServerSide
+    // Clients that explicitly ask for client-side decorations (Chromium and
+    // friends render their own window controls) would otherwise double up a
+    // button set inside the shell-drawn title bar, so honor that request.
+    // Clients that stay neutral or ask for server-side decorations keep
+    // Denial's unified frame.
+    match requested {
+        Some(XdgDecorationMode::ClientSide) => XdgDecorationMode::ClientSide,
+        _ => XdgDecorationMode::ServerSide,
+    }
 }
 
-fn configure_shell_decoration(toplevel: &ToplevelSurface) {
+fn configure_shell_decoration(toplevel: &ToplevelSurface, requested: Option<XdgDecorationMode>) {
     toplevel.with_pending_state(|state| {
-        state.decoration_mode = Some(shell_decoration_mode());
+        state.decoration_mode = Some(shell_decoration_mode(requested));
     });
     if toplevel.is_initial_configure_sent() {
         toplevel.send_pending_configure();
@@ -1717,15 +1732,15 @@ fn configure_shell_decoration(toplevel: &ToplevelSurface) {
 
 impl XdgDecorationHandler for RuntimeState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        configure_shell_decoration(&toplevel);
+        configure_shell_decoration(&toplevel, None);
     }
 
-    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: XdgDecorationMode) {
-        configure_shell_decoration(&toplevel);
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: XdgDecorationMode) {
+        configure_shell_decoration(&toplevel, Some(mode));
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        configure_shell_decoration(&toplevel);
+        configure_shell_decoration(&toplevel, None);
     }
 }
 

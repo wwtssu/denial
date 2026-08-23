@@ -10,6 +10,8 @@ use smithay::wayland::compositor::with_states;
 #[cfg(feature = "flutter")]
 use smithay::wayland::seat::WaylandFocus;
 #[cfg(feature = "flutter")]
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
+#[cfg(feature = "flutter")]
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 use smithay::wayland::shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData};
 #[cfg(feature = "flutter")]
@@ -68,8 +70,16 @@ const SHELL_FRAME_BORDER: i32 = 1;
 
 #[cfg(feature = "flutter")]
 pub(super) fn shell_draws_server_frame(window: &Window) -> bool {
-    if window.toplevel().is_some() {
-        return true;
+    if let Some(toplevel) = window.toplevel() {
+        // Respect xdg-decoration negotiation. A client that explicitly asked
+        // for client-side decorations (Chromium and friends draw their own
+        // window controls) must not receive a second shell-drawn title bar.
+        // Clients that stay neutral or ask for server-side decorations keep
+        // Denial's unified frame.
+        return !matches!(
+            toplevel.with_committed_state(|state| state.and_then(|s| s.decoration_mode)),
+            Some(zxdg_toplevel_decoration_v1::Mode::ClientSide)
+        );
     }
     window
         .x11_surface()
@@ -78,9 +88,14 @@ pub(super) fn shell_draws_server_frame(window: &Window) -> bool {
 
 #[cfg(feature = "flutter")]
 pub(super) fn shell_draws_x11_server_frame(x11: &X11Surface) -> bool {
-    // Denial owns the frame for managed X11 toplevels regardless of client
-    // decoration hints. Protocol-level popups remain unframed.
+    // Denial owns the frame for managed X11 toplevels unless the client
+    // draws its own decorations (CSD). X11 clients declare that through
+    // _MOTIF_WM_HINTS: a decorations bitmask of 0 means "I render my own
+    // title bar" (Steam, GTK apps on CSD desktops). Overlaying Denial's
+    // frame on those would double the title bar, so leave them alone.
+    // Protocol-level popups remain unframed.
     !x11.is_override_redirect()
+        && !x11.is_decorated()
         && !matches!(
             x11.window_type(),
             Some(
@@ -359,6 +374,7 @@ pub(in super::super) fn apply_window_commands(
             WindowCommand::Configure {
                 geometry, exact, ..
             } => {
+                tracing::info!(?geometry, exact, window_id, "flutter configure window");
                 let requested_size = Size::<i32, Logical>::from((
                     geometry.width.round() as i32,
                     geometry.height.round() as i32,

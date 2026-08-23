@@ -5,8 +5,16 @@ mod decoration_policy_tests {
     use super::*;
 
     #[test]
-    fn flutter_shell_is_always_the_decoration_owner() {
-        assert_eq!(shell_decoration_mode(), XdgDecorationMode::ServerSide);
+    fn decoration_mode_respects_explicit_client_requests() {
+        assert_eq!(shell_decoration_mode(None), XdgDecorationMode::ServerSide);
+        assert_eq!(
+            shell_decoration_mode(Some(XdgDecorationMode::ServerSide)),
+            XdgDecorationMode::ServerSide
+        );
+        assert_eq!(
+            shell_decoration_mode(Some(XdgDecorationMode::ClientSide)),
+            XdgDecorationMode::ClientSide
+        );
     }
 }
 

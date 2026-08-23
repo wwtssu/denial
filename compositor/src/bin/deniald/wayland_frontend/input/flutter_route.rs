@@ -168,19 +168,29 @@ pub(super) fn process_flutter_input_event(
             // for compositor pointer chords instead of Smithay's modifiers.
             let logo = state.native_escape_shortcut.super_pressed();
             let super_action = super_pointer_action(logo, button_code);
+            // Plain LMB press on the window border resizes that edge with no
+            // modifier at all — the desktop-standard interaction. SUPER+RMB
+            // stays as the anywhere-resize chord. The border band is the same
+            // inset used by the SUPER+RMB path.
+            let border_resize = !logo
+                && !pointer_grabbed
+                && button.state() == ButtonState::Pressed
+                && button_code == BTN_LEFT;
             let began_super_grab = if !pointer_grabbed
                 && button.state() == ButtonState::Pressed
                 && let Some(action) = super_action
             {
                 match (&target, local_window_region) {
-                    (InputTarget::Client(route), _) => {
-                        begin_super_pointer_grab(state, route, action, button_code, serial)
-                    }
-                    (InputTarget::Flutter, Some(region)) => {
-                        begin_local_super_pointer_grab(state, region, action, button_code, serial)
-                    }
+                    (InputTarget::Client(route), _) => begin_super_pointer_grab(
+                        state, route, action, button_code, serial, None,
+                    ),
+                    (InputTarget::Flutter, Some(region)) => begin_local_super_pointer_grab(
+                        state, region, action, button_code, serial, None,
+                    ),
                     _ => false,
                 }
+            } else if border_resize {
+                begin_border_resize_grab(state, &target, &local_window_region, button_code, serial)
             } else {
                 false
             };
@@ -761,7 +771,17 @@ pub(super) fn deliver_routed_flutter_pointer_motion(
         return;
     };
     match target {
-        RoutedPointerTarget::Flutter => state.flutter_input.handle_pointer_motion_at(x, y),
+        RoutedPointerTarget::Flutter => {
+            // Broadcast the pointer position for the shell scene too: the
+            // Flutter cursor layer renders from this stream and hit-tests
+            // its edge bands against it. Without this case the cursor would
+            // freeze at the last client-surface position while the pointer
+            // roams the title bar, edge band, or desktop.
+            if let Some(frontend) = state.wayland.as_mut() {
+                frontend.queue_cursor_position();
+            }
+            state.flutter_input.handle_pointer_motion_at(x, y);
+        }
         RoutedPointerTarget::Client(_) => {
             if let Some(frontend) = state.wayland.as_mut() {
                 frontend.queue_cursor_position();
@@ -1148,6 +1168,7 @@ pub(super) fn begin_local_super_pointer_grab(
     action: SuperPointerAction,
     button: u32,
     serial: Serial,
+    edge_override: Option<xdg_toplevel::ResizeEdge>,
 ) -> bool {
     if region.geometry_locked() {
         return false;
@@ -1189,7 +1210,8 @@ pub(super) fn begin_local_super_pointer_grab(
                 )
                     .into(),
             );
-            let edge = resize_edge_for_geometry(position, global_geometry);
+            let edge = edge_override
+                .unwrap_or_else(|| resize_edge_for_geometry(position, global_geometry));
             let edges = ResizeEdges::from_xdg(edge).expect("corner is a valid resize edge");
             LocalFlutterWindowGrab::new_resize(start_data, region.window_id, geometry, edges)
         }
@@ -1212,6 +1234,7 @@ pub(super) fn begin_super_pointer_grab(
     action: SuperPointerAction,
     button: u32,
     serial: Serial,
+    edge_override: Option<xdg_toplevel::ResizeEdge>,
 ) -> bool {
     let Some(window) = route.window.clone() else {
         return false;
@@ -1231,6 +1254,12 @@ pub(super) fn begin_super_pointer_grab(
             frontend.window_geometry_target(&window),
         )
     };
+    info!(
+        ?initial_location,
+        ?geometry,
+        pointer = ?position,
+        "shell grab start (space element_location vs geometry target)"
+    );
     let start_data = GrabStartData {
         focus: Some(route.focus_at(position)),
         button,
@@ -1262,7 +1291,8 @@ pub(super) fn begin_super_pointer_grab(
             );
         }
         SuperPointerAction::Resize => {
-            let edge = resize_edge_for_geometry(position, geometry);
+            let edge =
+                edge_override.unwrap_or_else(|| resize_edge_for_geometry(position, geometry));
             let edges = ResizeEdges::from_xdg(edge).expect("corner is a valid resize edge");
             super::super::queue_window_placement(
                 state,

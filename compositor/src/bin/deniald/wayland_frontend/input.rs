@@ -11,7 +11,9 @@ use smithay::backend::input::{
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::libseat::LibSeatSession;
 #[cfg(feature = "flutter")]
-use smithay::desktop::{WindowSurfaceType, utils::under_from_surface_tree};
+use smithay::desktop::{
+    PopupKind, PopupManager, WindowSurfaceType, utils::under_from_surface_tree,
+};
 use smithay::input::keyboard::{FilterResult, KeyboardHandle, Keycode};
 #[cfg(feature = "flutter")]
 use smithay::input::keyboard::{XkbConfig, xkb};
@@ -54,11 +56,9 @@ use super::super::settings::TouchpadSettings;
 use super::super::window_grab::{
     LocalFlutterWindowGrab, MoveSurfaceGrab, ResizeEdges, ResizeSurfaceGrab, X11ResizeSurfaceGrab,
 };
-#[cfg(all(feature = "flutter", test))]
-use super::super::wire::InputRect;
 #[cfg(feature = "flutter")]
 use super::super::wire::{
-    InputLayoutSnapshot, InputWindowRegion, WindowPlacementChange, WindowPlacementPhase,
+    InputLayoutSnapshot, InputRect, InputWindowRegion, WindowPlacementChange, WindowPlacementPhase,
 };
 #[cfg(feature = "flutter")]
 use super::FlutterPointerPress;
@@ -420,22 +420,30 @@ impl PointerConstraintEscape {
 impl ClientInputRoute {
     fn focus_at(&self, position: Point<f64, Logical>) -> (WlSurface, Point<f64, Logical>) {
         let scene_position = position - self.scene_origin;
-        let (local_x, local_y) =
-            self.region
-                .rect
-                .map_to(self.region.source_rect, scene_position.x, scene_position.y);
+        // Map through the client content area, not the full frame: the
+        // frame's top strip is the shell title bar, which has no client
+        // buffer. Anchor the content rect at the frame's bottom-left — the
+        // decoration sits on top, so the content's bottom edge coincides
+        // with the frame's. Its size is the client content texture, making
+        // content -> texture a 1:1 mapping.
+        let source = self.region.source_rect;
+        let content = InputRect {
+            x: self.region.rect.x + (self.region.rect.width - source.width) / 2.0,
+            y: self.region.rect.y + self.region.rect.height - source.height,
+            width: source.width,
+            height: source.height,
+        };
+        let (local_x, local_y) = content.map_to(source, scene_position.x, scene_position.y);
         let local_point = Point::from((local_x, local_y));
         let (surface, local_origin) =
             under_from_surface_tree(&self.surface, local_point, (0, 0), WindowSurfaceType::ALL)
                 .unwrap_or_else(|| (self.surface.clone(), (0, 0).into()));
-        let scale_x = self.region.rect.width / self.region.source_rect.width;
-        let scale_y = self.region.rect.height / self.region.source_rect.height;
+        let scale_x = content.width / source.width;
+        let scale_y = content.height / source.height;
         let global_origin = self.scene_origin
             + Point::from((
-                self.region.rect.x
-                    + (f64::from(local_origin.x) - self.region.source_rect.x) * scale_x,
-                self.region.rect.y
-                    + (f64::from(local_origin.y) - self.region.source_rect.y) * scale_y,
+                content.x + (f64::from(local_origin.x) - source.x) * scale_x,
+                content.y + (f64::from(local_origin.y) - source.y) * scale_y,
             ));
         (surface, global_origin)
     }
@@ -550,13 +558,239 @@ fn resize_edge_for_geometry(
     pointer: Point<f64, Logical>,
     geometry: Rectangle<i32, Logical>,
 ) -> xdg_toplevel::ResizeEdge {
-    let midpoint_x = f64::from(geometry.loc.x) + f64::from(geometry.size.w) / 2.0;
-    let midpoint_y = f64::from(geometry.loc.y) + f64::from(geometry.size.h) / 2.0;
-    match (pointer.x < midpoint_x, pointer.y < midpoint_y) {
-        (true, true) => xdg_toplevel::ResizeEdge::TopLeft,
-        (true, false) => xdg_toplevel::ResizeEdge::BottomLeft,
-        (false, true) => xdg_toplevel::ResizeEdge::TopRight,
-        (false, false) => xdg_toplevel::ResizeEdge::BottomRight,
+    use xdg_toplevel::ResizeEdge as Edge;
+    const EDGE_INSET: f64 = 12.0;
+
+    let left = f64::from(geometry.loc.x);
+    let top = f64::from(geometry.loc.y);
+    let right = left + f64::from(geometry.size.w);
+    let bottom = top + f64::from(geometry.size.h);
+    let x = pointer.x;
+    let y = pointer.y;
+
+    let near_left = x - left <= EDGE_INSET;
+    let near_right = right - x <= EDGE_INSET;
+    let near_top = y - top <= EDGE_INSET;
+    let near_bottom = bottom - y <= EDGE_INSET;
+
+    // Corners win over edges inside the inset band.
+    match (near_left, near_right, near_top, near_bottom) {
+        (true, false, true, false) => return Edge::TopLeft,
+        (true, false, false, true) => return Edge::BottomLeft,
+        (false, true, true, false) => return Edge::TopRight,
+        (false, true, false, true) => return Edge::BottomRight,
+        (true, _, _, _) => return Edge::Left,
+        (_, true, _, _) => return Edge::Right,
+        (_, _, true, _) => return Edge::Top,
+        (_, _, _, true) => return Edge::Bottom,
+        _ => {}
+    }
+
+    // Pointer inside the window but away from the border: resize the nearest
+    // edge. The midpoint of the top border therefore yields Top (height only)
+    // instead of a corner that would also change the width.
+    let dist_left = (x - left).abs();
+    let dist_right = (right - x).abs();
+    let dist_top = (y - top).abs();
+    let dist_bottom = (bottom - y).abs();
+    let min = dist_left.min(dist_right).min(dist_top).min(dist_bottom);
+    if min == dist_top {
+        Edge::Top
+    } else if min == dist_bottom {
+        Edge::Bottom
+    } else if min == dist_left {
+        Edge::Left
+    } else {
+        Edge::Right
+    }
+}
+
+/// Border-band edge detection for unmodified left-press resize.
+///
+/// Unlike [`resize_edge_for_geometry`] (which falls back to the nearest edge
+/// anywhere inside the window for SUPER+RMB), this returns `None` unless the
+/// pointer is inside the edge inset band. A plain LMB press on the border
+/// therefore resizes only when the cursor is actually on an edge — the
+/// desktop-standard interaction, no modifier required. The window's top
+/// border is the title bar's top edge, so that strip participates too.
+///
+/// The geometry is the window's *expanded* input rect: 8px outside the
+/// visual frame (the transparent edge band — the window input shape is a
+/// slightly larger window whose margin is never rendered) plus the frame
+/// itself. The band is the 12px inset of that expanded rect, i.e. an
+/// asymmetric safe area: 8px outside the visual edge, 4px inside. One shared
+/// value with the shell's cursor hit test, so the cursor never claims a
+/// press the compositor would refuse.
+#[cfg(feature = "flutter")]
+fn resize_edge_at_border(
+    pointer: Point<f64, Logical>,
+    geometry: Rectangle<i32, Logical>,
+) -> Option<xdg_toplevel::ResizeEdge> {
+    use xdg_toplevel::ResizeEdge as Edge;
+    const EDGE_INSET: f64 = 12.0;
+
+    let left = f64::from(geometry.loc.x);
+    let top = f64::from(geometry.loc.y);
+    let right = left + f64::from(geometry.size.w);
+    let bottom = top + f64::from(geometry.size.h);
+    let x = pointer.x;
+    let y = pointer.y;
+
+    let near_left = x - left <= EDGE_INSET;
+    let near_right = right - x <= EDGE_INSET;
+    let near_top = y - top <= EDGE_INSET;
+    let near_bottom = bottom - y <= EDGE_INSET;
+
+    match (near_left, near_right, near_top, near_bottom) {
+        (true, false, true, false) => Some(Edge::TopLeft),
+        (true, false, false, true) => Some(Edge::BottomLeft),
+        (false, true, true, false) => Some(Edge::TopRight),
+        (false, true, false, true) => Some(Edge::BottomRight),
+        (true, _, _, _) => Some(Edge::Left),
+        (_, true, _, _) => Some(Edge::Right),
+        (_, _, true, _) => Some(Edge::Top),
+        (_, _, _, true) => Some(Edge::Bottom),
+        _ => None,
+    }
+}
+
+/// Starts a resize grab for a plain LMB press inside a window's border band.
+///
+/// This is the desktop-standard interaction: no modifier, just press on the
+/// edge and drag. Geometry is the window's full frame — the same rect the
+/// publisher uses for both the window input region and the shellRegions
+/// subtraction — so the frame includes the title bar and its top border band
+/// doubles as the title bar's top edge. Decoration hits (target Flutter with
+/// no local region) resolve the owning window through the layout and rebuild
+/// its route; local-window hits take the local grab path.
+#[cfg(feature = "flutter")]
+fn begin_border_resize_grab(
+    state: &mut RuntimeState,
+    target: &InputTarget,
+    local_window_region: &Option<InputWindowRegion>,
+    button: u32,
+    serial: Serial,
+) -> bool {
+    let frontend = state.wayland.as_ref().expect("missing Wayland frontend");
+    let layout = frontend.input_layout.as_ref();
+    let scene_position = frontend.pointer_location - frontend.atlas_origin;
+
+    // Resolve the owning window region: content hits carry a route, local
+    // window hits carry the region, decoration hits resolve through the
+    // layout (a covered client can never be reached through a higher
+    // window's title bar, mirroring input_route). The transparent edge band
+    // (8px outside the visual frame) resolves through the same lookup by
+    // matching against the expanded input rect.
+    let (route, region) = match target {
+        InputTarget::Client(route) => (Some(route.clone()), route.region),
+        InputTarget::Flutter => {
+            if let Some(region) = local_window_region {
+                (None, *region)
+            } else {
+                let Some((layout_index, (region, _))) = layout
+                    .expect("missing input layout")
+                    .windows
+                    .iter()
+                    .zip(&layout.expect("missing input layout").window_decorations)
+                    .enumerate()
+                    .find(|(_, (region, decoration))| {
+                        region_accepts_input(region, scene_position)
+                            || (decoration.width > 0.0
+                                && decoration.height > 0.0
+                                && decoration.contains(scene_position.x, scene_position.y)
+                                && region.visible()
+                                && region.hit_test_enabled())
+                            || (region.visible()
+                                && region.hit_test_enabled()
+                                && scene_position.x >= region.rect.x - 8.0
+                                && scene_position.x
+                                    <= region.rect.x + region.rect.width + 8.0
+                                && scene_position.y >= region.rect.y - 8.0
+                                && scene_position.y
+                                    <= region.rect.y + region.rect.height + 8.0)
+                    })
+                else {
+                    return false;
+                };
+                let Some(surface) = frontend.surfaces_by_id.get(&region.surface_id).cloned()
+                else {
+                    return false;
+                };
+                let Some(window) = frontend.window_for_id(region.window_id) else {
+                    return false;
+                };
+                let Some(root_surface) = frontend.window_root_surface(&window) else {
+                    return false;
+                };
+                if frontend.owning_toplevel_surface(&surface).as_ref() != Some(&root_surface) {
+                    return false;
+                }
+                (
+                    Some(ClientInputRoute {
+                        window: Some(window),
+                        surface,
+                        region: *region,
+                        layout_index,
+                        scene_origin: frontend.atlas_origin,
+                    }),
+                    *region,
+                )
+            }
+        }
+    };
+
+    if region.geometry_locked() {
+        return false;
+    }
+    // The border band lives on the window's expanded input rect: the visual
+    // frame plus the transparent 8px edge band, so the asymmetric safe area
+    // (8px outside / 4px inside the visual edge) is a uniform 12px inset.
+    let global_geometry = Rectangle::new(
+        Point::from((
+            (region.rect.x - 8.0 + frontend.atlas_origin.x).round() as i32,
+            (region.rect.y - 8.0 + frontend.atlas_origin.y).round() as i32,
+        )),
+        (
+            (region.rect.width + 16.0).round() as i32,
+            (region.rect.height + 16.0).round() as i32,
+        )
+            .into(),
+    );
+    let Some(edge) = resize_edge_at_border(frontend.pointer_location, global_geometry) else {
+        info!(
+            x = frontend.pointer_location.x,
+            y = frontend.pointer_location.y,
+            rect = ?global_geometry,
+            "border press outside the edge band — no resize"
+        );
+        return false;
+    };
+    info!(
+        x = frontend.pointer_location.x,
+        y = frontend.pointer_location.y,
+        rect = ?global_geometry,
+        edge = ?edge,
+        has_route = route.is_some(),
+        "border press starts resize grab"
+    );
+
+    match route {
+        Some(route) => flutter_route::begin_super_pointer_grab(
+            state,
+            &route,
+            SuperPointerAction::Resize,
+            button,
+            serial,
+            Some(edge),
+        ),
+        None => flutter_route::begin_local_super_pointer_grab(
+            state,
+            region,
+            SuperPointerAction::Resize,
+            button,
+            serial,
+            Some(edge),
+        ),
     }
 }
 
@@ -758,18 +992,54 @@ impl WaylandFrontend {
             return None;
         }
 
-        // Local Flutter windows participate in the same front-to-back window
-        // region list as client surfaces. They intentionally have no Smithay
-        // input target: once the topmost hit is local, stop traversal so a
-        // covered Wayland client cannot receive the event through it.
-        if layout
+        // XDG popups render above their parent window but are absent from
+        // the Flutter input layout. Route hits on popup geometry directly
+        // to the popup surface so menu items receive events; routing them
+        // to the parent toplevel would read as an outside click and
+        // dismiss the menu.
+        if let Some(route) = self.popup_input_route(scene_position) {
+            self.client_input_route_cache = Some(route);
+            return self.client_input_route_cache.as_ref();
+        }
+
+        // Windows are depth-tested front-to-back as single units: a window's
+        // shell-drawn decoration (title bar) and its content share the same
+        // z unit. The first hit decides routing - decoration and local
+        // Flutter windows route to the shell scene (they have no Smithay
+        // input target), content continues to the client route below. A
+        // covered client can never receive the event through a higher
+        // window's title bar.
+        if let Some((hit, decoration)) = layout
             .windows
             .iter()
-            .find(|region| region_accepts_input(region, scene_position))
-            .is_some_and(|region| self.local_windows.contains(region.window_id))
+            .zip(&layout.window_decorations)
+            .find(|(region, decoration)| {
+                region_accepts_input(region, scene_position)
+                    || (decoration.width > 0.0
+                        && decoration.height > 0.0
+                        && decoration.contains(scene_position.x, scene_position.y)
+                        && region.visible()
+                        && region.hit_test_enabled())
+            })
         {
-            self.client_input_route_cache = None;
-            return None;
+            let is_local = self.local_windows.contains(hit.window_id);
+            let is_decoration = decoration.width > 0.0
+                && decoration.height > 0.0
+                && decoration.contains(scene_position.x, scene_position.y);
+            info!(
+                window_id = hit.window_id,
+                object_id = hit.object_id,
+                surface_id = hit.surface_id,
+                z = hit.z,
+                is_local,
+                is_decoration,
+                rect = ?hit.rect,
+                "input hit test at {scene_position:?}"
+            );
+            if is_local || is_decoration {
+                self.client_input_route_cache = None;
+                return None;
+            }
         }
 
         // Pointer samples commonly arrive much faster than Flutter layout
@@ -826,10 +1096,175 @@ impl WaylandFrontend {
             });
 
         if let Some(route) = route {
+            info!(
+                window_id = route.region.window_id,
+                surface_id = route.region.surface_id,
+                z = route.region.z,
+                rect = ?route.region.rect,
+                "created client input route at {scene_position:?}"
+            );
             self.client_input_route_cache = Some(route);
             return self.client_input_route_cache.as_ref();
         }
 
+        // X11 fallback: the Flutter input layout lags new X11 windows by up
+        // to seconds (the layout is a Rust -> Flutter -> Rust round trip),
+        // but X11 popups must be clickable the instant they map — a menu
+        // whose events are routed to the parent window is interpreted as an
+        // outside click and closes immediately. Hit the compositor-owned
+        // Space directly for X11 windows so they are interactive from the
+        // first frame. Wayland windows stay layout-only: their decoration
+        // semantics live entirely in the Flutter scene.
+        let x11_fallback = self.space.elements().enumerate().rev().find_map(
+            |(z, window)| {
+                let x11 = window.x11_surface()?;
+                let geometry = self.window_geometry_target(window);
+                if geometry.size.w <= 0 || geometry.size.h <= 0 {
+                    return None;
+                }
+                let rect = InputRect {
+                    x: geometry.loc.x as f64,
+                    y: geometry.loc.y as f64,
+                    width: geometry.size.w as f64,
+                    height: geometry.size.h as f64,
+                };
+                if !rect.contains(scene_position.x, scene_position.y) {
+                    return None;
+                }
+                let surface = self.window_root_surface(window)?;
+                let surface_id = self.surface_id(&surface)?;
+                let _ = x11;
+                Some((
+                    z,
+                    ClientInputRoute {
+                        window: Some(window.clone()),
+                        surface,
+                        region: InputWindowRegion {
+                            object_id: surface_id,
+                            surface_id,
+                            window_id: surface_id,
+                            rect,
+                            source_rect: rect,
+                            z: z as i32,
+                            flags: crate::wire::INPUT_WINDOW_VISIBLE,
+                        },
+                        layout_index: 0,
+                        scene_origin: self.atlas_origin,
+                    },
+                ))
+            },
+        );
+        if let Some((_, route)) = x11_fallback {
+            info!(
+                window_id = route.region.window_id,
+                surface_id = route.region.surface_id,
+                z = route.region.z,
+                rect = ?route.region.rect,
+                "created X11 fallback input route at {scene_position:?}"
+            );
+            self.client_input_route_cache = Some(route);
+            return self.client_input_route_cache.as_ref();
+        }
+
+        None
+    }
+
+    /// Finds a hit on an XDG popup surface (context menus, dropdowns) and
+    /// builds a client route to it. Popups are rendered above their parent
+    /// window in the compositor scene but never appear in the Flutter
+    /// input layout, so their geometry is queried from the compositor
+    /// space directly (same pattern as the X11 fallback below).
+    fn popup_input_route(&self, scene_position: Point<f64, Logical>) -> Option<ClientInputRoute> {
+        for window in self.space.elements().rev() {
+            let Some(root) = self.window_root_surface(window) else {
+                continue;
+            };
+            for (popup, popup_location) in PopupManager::popups_for_surface(&root) {
+                let popup_geometry = popup.geometry();
+                let PopupKind::Xdg(popup) = popup else {
+                    continue;
+                };
+                let popup_surface = popup.wl_surface();
+                if !popup_surface.is_alive() {
+                    continue;
+                }
+                let content = self.window_geometry_target(window);
+                let popup_origin = (
+                    content
+                        .loc
+                        .x
+                        .saturating_add(popup_location.x)
+                        .saturating_sub(popup_geometry.loc.x),
+                    content
+                        .loc
+                        .y
+                        .saturating_add(popup_location.y)
+                        .saturating_sub(popup_geometry.loc.y),
+                );
+                // Route on the popup's real content geometry rather than the
+                // full render buffer. The compositor draws the buffer with its
+                // shadow margins, but the XDG popup geometry places the
+                // interactive content offset from the buffer origin (shadow
+                // band). Using the render extent as the input+focus region
+                // shifts the pointer surface-local coordinates by exactly that
+                // offset, so menu hover highlights never land on the client.
+                // Anchor the region at the content origin (popup origin plus the
+                // geometry offset) with the geometry's content size.
+                let geo_size = popup_geometry.size;
+                if geo_size.w <= 0 || geo_size.h <= 0 {
+                    continue;
+                }
+                let rect = InputRect {
+                    x: (popup_origin.0 + popup_geometry.loc.x) as f64,
+                    y: (popup_origin.1 + popup_geometry.loc.y) as f64,
+                    width: geo_size.w as f64,
+                    height: geo_size.h as f64,
+                };
+                info!(
+                    content_loc = ?content.loc,
+                    popup_location = ?popup_location,
+                    popup_geometry = ?popup_geometry,
+                    popup_origin = ?popup_origin,
+                    "XDG popup input geometry"
+                );
+                if !rect.contains(scene_position.x, scene_position.y) {
+                    continue;
+                }
+                let Some(surface_id) = self.surface_id(&popup_surface) else {
+                    continue;
+                };
+                info!(
+                    surface_id,
+                    rect = ?rect,
+                    "created XDG popup input route at {scene_position:?}"
+                );
+                return Some(ClientInputRoute {
+                    window: None,
+                    surface: popup_surface.clone(),
+                    region: InputWindowRegion {
+                        object_id: surface_id,
+                        surface_id,
+                        window_id: 0,
+                        rect,
+                        // Source is the popup buffer's own local coordinate
+                        // space (anchor at 0,0), NOT the global rect. Deriving
+                        // source from the global rect makes focus_at subtract
+                        // the global origin from itself and collapse
+                        // global_origin to ~0 (content.x + (0 - source.x)).
+                        source_rect: InputRect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: geo_size.w as f64,
+                            height: geo_size.h as f64,
+                        },
+                        z: i32::MAX,
+                        flags: crate::wire::INPUT_WINDOW_VISIBLE,
+                    },
+                    layout_index: 0,
+                    scene_origin: self.atlas_origin,
+                });
+            }
+        }
         None
     }
 
