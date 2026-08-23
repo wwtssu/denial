@@ -1321,10 +1321,11 @@ class InputLayout {
   List<InputWindowRegion>? get windows => const fb.ListReader<InputWindowRegion>(InputWindowRegion.reader).vTableGetNullable(_bc, _bcOffset, 10);
   List<int>? get visibleSurfaceIds => const fb.ListReader<int>(fb.Uint64Reader()).vTableGetNullable(_bc, _bcOffset, 12);
   List<WireRect>? get softwareKeyboardRegions => const fb.ListReader<WireRect>(WireRect.reader).vTableGetNullable(_bc, _bcOffset, 14);
+  List<WireRect>? get windowDecorations => const fb.ListReader<WireRect>(WireRect.reader).vTableGetNullable(_bc, _bcOffset, 16);
 
   @override
   String toString() {
-    return 'InputLayout{epoch: ${epoch}, flags: ${flags}, shellRegions: ${shellRegions}, windows: ${windows}, visibleSurfaceIds: ${visibleSurfaceIds}, softwareKeyboardRegions: ${softwareKeyboardRegions}}';
+    return 'InputLayout{epoch: ${epoch}, flags: ${flags}, shellRegions: ${shellRegions}, windows: ${windows}, visibleSurfaceIds: ${visibleSurfaceIds}, softwareKeyboardRegions: ${softwareKeyboardRegions}, windowDecorations: ${windowDecorations}}';
   }
 }
 
@@ -1342,7 +1343,7 @@ class InputLayoutBuilder {
   final fb.Builder fbBuilder;
 
   void begin() {
-    fbBuilder.startTable(6);
+    fbBuilder.startTable(7);
   }
 
   int addEpoch(int? epoch) {
@@ -1369,6 +1370,10 @@ class InputLayoutBuilder {
     fbBuilder.addOffset(5, offset);
     return fbBuilder.offset;
   }
+  int addWindowDecorationsOffset(int? offset) {
+    fbBuilder.addOffset(6, offset);
+    return fbBuilder.offset;
+  }
 
   int finish() {
     return fbBuilder.endTable();
@@ -1382,6 +1387,7 @@ class InputLayoutObjectBuilder extends fb.ObjectBuilder {
   final List<InputWindowRegionObjectBuilder>? _windows;
   final List<int>? _visibleSurfaceIds;
   final List<WireRectObjectBuilder>? _softwareKeyboardRegions;
+  final List<WireRectObjectBuilder>? _windowDecorations;
 
   InputLayoutObjectBuilder({
     int? epoch,
@@ -1390,13 +1396,15 @@ class InputLayoutObjectBuilder extends fb.ObjectBuilder {
     List<InputWindowRegionObjectBuilder>? windows,
     List<int>? visibleSurfaceIds,
     List<WireRectObjectBuilder>? softwareKeyboardRegions,
+    List<WireRectObjectBuilder>? windowDecorations,
   })
       : _epoch = epoch,
         _flags = flags,
         _shellRegions = shellRegions,
         _windows = windows,
         _visibleSurfaceIds = visibleSurfaceIds,
-        _softwareKeyboardRegions = softwareKeyboardRegions;
+        _softwareKeyboardRegions = softwareKeyboardRegions,
+        _windowDecorations = windowDecorations;
 
   /// Finish building, and store into the [fbBuilder].
   @override
@@ -1409,13 +1417,16 @@ class InputLayoutObjectBuilder extends fb.ObjectBuilder {
         : fbBuilder.writeListUint64(_visibleSurfaceIds!);
     final int? softwareKeyboardRegionsOffset = _softwareKeyboardRegions == null ? null
         : fbBuilder.writeListOfStructs(_softwareKeyboardRegions!);
-    fbBuilder.startTable(6);
+    final int? windowDecorationsOffset = _windowDecorations == null ? null
+        : fbBuilder.writeListOfStructs(_windowDecorations!);
+    fbBuilder.startTable(7);
     fbBuilder.addUint64(0, _epoch);
     fbBuilder.addUint32(1, _flags);
     fbBuilder.addOffset(2, shellRegionsOffset);
     fbBuilder.addOffset(3, windowsOffset);
     fbBuilder.addOffset(4, visibleSurfaceIdsOffset);
     fbBuilder.addOffset(5, softwareKeyboardRegionsOffset);
+    fbBuilder.addOffset(6, windowDecorationsOffset);
     return fbBuilder.endTable();
   }
 

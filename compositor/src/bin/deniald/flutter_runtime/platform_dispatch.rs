@@ -122,7 +122,22 @@ impl FlutterRuntime {
                         .send_platform_message(wire::TO_FLUTTER_CHANNEL, response)?;
                 }
                 Ok(None) => {}
-                Err(error) => warn!(%error, "rejected Denial wire message from Flutter"),
+                Err(error) => {
+                    let payload_type = wire::fb::envelope_buffer_has_identifier(&message.data).then(
+                        || {
+                            let verifier = flatbuffers::VerifierOptions {
+                                max_depth: 16,
+                                max_tables: 16_384,
+                                max_apparent_size: 1024 * 1024 + 1,
+                                ignore_missing_null_terminator: false,
+                            };
+                            wire::fb::root_as_envelope_with_opts(&verifier, &message.data)
+                                .ok()
+                                .map(|envelope| envelope.payload_type())
+                        },
+                    );
+                    warn!(%error, ?payload_type, "rejected Denial wire message from Flutter");
+                }
             }
         } else if message.channel.as_bytes() == system_command::CHANNEL.to_bytes() {
             if self.authentication.security_gate_locked() {

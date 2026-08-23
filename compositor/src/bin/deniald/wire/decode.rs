@@ -772,11 +772,18 @@ fn decode_input_layout(
     let shell_regions = layout.shell_regions();
     let software_keyboard_regions = layout.software_keyboard_regions();
     let windows = layout.windows();
+    let window_decorations = layout.window_decorations();
     let visible_surface_ids = layout.visible_surface_ids();
     if shell_regions.is_some_and(|regions| regions.len() > MAX_REGIONS)
         || software_keyboard_regions.is_some_and(|regions| regions.len() > MAX_REGIONS)
         || windows.is_some_and(|regions| regions.len() > MAX_REGIONS)
+        || window_decorations.is_some_and(|regions| regions.len() > MAX_REGIONS)
         || visible_surface_ids.is_some_and(|ids| ids.len() > MAX_SURFACES)
+    {
+        return Err(WireError::Count);
+    }
+    if let (Some(windows), Some(decorations)) = (windows, window_decorations)
+        && windows.len() != decorations.len()
     {
         return Err(WireError::Count);
     }
@@ -786,6 +793,7 @@ fn decode_input_layout(
     decoded.shell_regions.clear();
     decoded.software_keyboard_regions.clear();
     decoded.windows.clear();
+    decoded.window_decorations.clear();
     decoded.visible_surface_ids.clear();
     identities.clear();
 
@@ -810,14 +818,39 @@ fn decode_input_layout(
     if let Some(windows) = windows {
         decoded.windows.reserve(windows.len());
         identities.reserve(windows.len());
+        // A window clipped into several visible fragments legitimately
+        // repeats its own surface id across those regions. Only a surface
+        // shared by two *different* windows is invalid: each surface may be
+        // owned by exactly one window.
+        let mut surface_owners: HashMap<u64, u64> = HashMap::new();
         let mut previous: Option<(i32, u64)> = None;
         for index in 0..windows.len() {
             let window = windows.get(index);
             if window.object_id() == 0 || window.surface_id() == 0 || window.window_id() == 0 {
+                warn!(
+                    index,
+                    object_id = window.object_id(),
+                    surface_id = window.surface_id(),
+                    window_id = window.window_id(),
+                    "rejected input window with a zero identity field"
+                );
                 return Err(WireError::Identity);
             }
-            if !identities.insert(window.surface_id()) {
-                return Err(WireError::Identity);
+            match surface_owners.get(&window.surface_id()) {
+                Some(owner) if *owner != window.window_id() => {
+                    warn!(
+                        index,
+                        surface_id = window.surface_id(),
+                        window_id = window.window_id(),
+                        owner,
+                        "rejected input window sharing a surface with another window"
+                    );
+                    return Err(WireError::Identity);
+                }
+                Some(_) => {}
+                None => {
+                    surface_owners.insert(window.surface_id(), window.window_id());
+                }
             }
             if previous.is_some_and(|(z, surface_id)| {
                 z < window.z() || (z == window.z() && surface_id < window.surface_id())
@@ -837,6 +870,36 @@ fn decode_input_layout(
             });
             previous = Some((window.z(), window.surface_id()));
         }
+        if let Some(decorations) = window_decorations {
+            for index in 0..decorations.len() {
+                let decoration = decorations.get(index);
+                let rect = InputRect {
+                    x: decoration.x(),
+                    y: decoration.y(),
+                    width: decoration.width(),
+                    height: decoration.height(),
+                };
+                // A zero-size rect is the "no decoration" placeholder, so
+                // only non-finite or negative geometry is rejected here.
+                if !rect.x.is_finite()
+                    || !rect.y.is_finite()
+                    || !rect.width.is_finite()
+                    || !rect.height.is_finite()
+                    || rect.width < 0.0
+                    || rect.height < 0.0
+                {
+                    return Err(WireError::Geometry);
+                }
+                decoded.window_decorations.push(rect);
+            }
+        } else {
+            decoded
+                .window_decorations
+                .resize(decoded.windows.len(), InputRect::default());
+        }
+    } else if window_decorations.is_some() {
+        // Decorations without any window regions cannot be aligned.
+        return Err(WireError::Count);
     }
 
     identities.clear();
@@ -848,6 +911,11 @@ fn decode_input_layout(
         for index in 0..visible_surface_ids.len() {
             let surface_id = visible_surface_ids.get(index);
             if surface_id == 0 || !identities.insert(surface_id) {
+                warn!(
+                    index,
+                    surface_id,
+                    "rejected input layout with a zero or duplicate visible surface id"
+                );
                 return Err(WireError::Identity);
             }
             decoded.visible_surface_ids.push(surface_id);

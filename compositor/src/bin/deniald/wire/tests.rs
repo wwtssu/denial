@@ -195,6 +195,7 @@ fn input_layout_with_visible(
             windows: Some(windows),
             visible_surface_ids: Some(visible_surface_ids),
             software_keyboard_regions: None,
+            window_decorations: None,
         },
     );
     let envelope = fb::Envelope::create(

@@ -4,10 +4,12 @@
 //! bounded and verified before it is inspected; generated unchecked accessors
 //! never see bytes supplied directly by Flutter.
 
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::ffi::CStr;
 use std::fmt;
+
+use tracing::warn;
 
 use denial_core::topology::{AtlasPlan, OutputId, SCALE_BASE, TopologySnapshot};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
@@ -44,7 +46,7 @@ mod generated {
     ));
 }
 
-use generated::denial::wire as fb;
+pub use generated::denial::wire as fb;
 
 #[path = "wire/decode.rs"]
 mod decode;
@@ -87,7 +89,7 @@ pub const INPUT_WINDOW_VISIBLE: u32 = 1 << 0;
 pub const INPUT_WINDOW_HIT_TEST_DISABLED: u32 = 1 << 1;
 pub const INPUT_WINDOW_GEOMETRY_LOCKED: u32 = 1 << 2;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InputRect {
     pub x: f64,
     pub y: f64,
@@ -351,6 +353,9 @@ pub struct InputLayoutSnapshot {
     pub shell_regions: Vec<InputRect>,
     pub software_keyboard_regions: Vec<InputRect>,
     pub windows: Vec<InputWindowRegion>,
+    /// Shell-drawn decoration per window, parallel to [Self::windows]
+    /// (same length, index-aligned). A zero-size rect means no decoration.
+    pub window_decorations: Vec<InputRect>,
     pub visible_surface_ids: Vec<u64>,
 }
 

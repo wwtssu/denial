@@ -239,6 +239,11 @@ table InputLayout {
   // Compositor-owned software-keyboard surfaces. Touching these regions must
   // preserve the active client editor instead of behaving like an outside tap.
   software_keyboard_regions:[WireRect];
+  // Shell-drawn decoration belonging to each window, parallel to `windows`
+  // (same length, index-aligned). A zero-size rect means the window has no
+  // decoration region. Decoration hits route to the shell scene but are
+  // depth-tested as part of their window.
+  window_decorations:[WireRect];
 }
 
 table SurfaceLayer {
