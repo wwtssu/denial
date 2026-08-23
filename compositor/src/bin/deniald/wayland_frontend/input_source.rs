@@ -11,6 +11,7 @@ use std::{
     cell::RefCell,
     collections::HashSet,
     os::fd::{AsFd, BorrowedFd, OwnedFd},
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
@@ -163,8 +164,17 @@ fn scan_joysticks(
         if watched.borrow().contains(&path) {
             continue;
         }
-        if let Err(error) = watch_joystick(handle, session.clone(), watched.clone(), path.clone()) {
-            debug!(%error, device = %path.display(), "could not watch joystick for idle activity");
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            watch_joystick(handle, session.clone(), watched.clone(), path.clone())
+        }));
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                debug!(%error, device = %path.display(), "could not watch joystick for idle activity");
+            }
+            Err(_) => {
+                warn!(device = %path.display(), "joystick watch panicked; skipping device");
+            }
         }
     }
 }
